@@ -1,3 +1,27 @@
 spring:
   application:
-    name: Materiais
+    name: inprout-materials-service
+
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    # URL do Banco de Materiais (separado do monólito)
+    # Se rodar local sem docker, usa localhost. Se rodar via docker-compose, o host deve ser 'db' ou o IP do seu banco.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/inp_materials}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:inpservices123}
+
+  jpa:
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: update # Cria/Atualiza as tabelas automaticamente
+    show-sql: true
+
+server:
+  port: 8081 # Porta diferente do Monólito (8080)
+
+# Configuração Personalizada para comunicação com Monólito
+app:
+  monolith:
+    url: ${APP_MONOLITH_URL:http://localhost:8080}
