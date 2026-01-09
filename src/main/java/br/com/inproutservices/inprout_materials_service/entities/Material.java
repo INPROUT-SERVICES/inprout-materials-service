@@ -1,8 +1,11 @@
 package br.com.inproutservices.inprout_materials_service.entities;
 
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 @Entity
@@ -37,6 +40,16 @@ public class Material {
     @Column(name = "data_atualizacao")
     private LocalDateTime dataAtualizacao;
 
+    @Column(columnDefinition = "TEXT")
+    private String observacoes;
+
+    @Column(nullable = false)
+    private String empresa;
+
+    @OneToMany(mappedBy = "material", cascade = CascadeType.ALL, orphanRemoval = true)
+    @JsonManagedReference
+    private List<EntradaMaterial> entradas = new ArrayList<>();
+
     public Material() {}
 
     @PrePersist
@@ -64,6 +77,30 @@ public class Material {
     public void setCustoMedioPonderado(BigDecimal custoMedioPonderado) { this.custoMedioPonderado = custoMedioPonderado; }
     public LocalDateTime getDataAtualizacao() { return dataAtualizacao; }
     public void setDataAtualizacao(LocalDateTime dataAtualizacao) { this.dataAtualizacao = dataAtualizacao; }
+
+    public String getObservacoes() {
+        return observacoes;
+    }
+
+    public void setObservacoes(String observacoes) {
+        this.observacoes = observacoes;
+    }
+
+    public String getEmpresa() {
+        return empresa;
+    }
+
+    public void setEmpresa(String empresa) {
+        this.empresa = empresa;
+    }
+
+    public List<EntradaMaterial> getEntradas() {
+        return entradas;
+    }
+
+    public void setEntradas(List<EntradaMaterial> entradas) {
+        this.entradas = entradas;
+    }
 
     @Override
     public boolean equals(Object o) {

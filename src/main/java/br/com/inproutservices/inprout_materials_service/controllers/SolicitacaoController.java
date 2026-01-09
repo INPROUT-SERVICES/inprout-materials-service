@@ -1,6 +1,7 @@
 package br.com.inproutservices.inprout_materials_service.controllers;
 
 import br.com.inproutservices.inprout_materials_service.dtos.CriarSolicitacaoLoteDTO;
+import br.com.inproutservices.inprout_materials_service.dtos.SolicitacaoLoteRequestDTO;
 import br.com.inproutservices.inprout_materials_service.entities.Solicitacao;
 import br.com.inproutservices.inprout_materials_service.services.SolicitacaoService;
 import org.springframework.http.HttpStatus;
@@ -23,5 +24,11 @@ public class SolicitacaoController {
     public ResponseEntity<List<Solicitacao>> criarLote(@RequestBody CriarSolicitacaoLoteDTO dto) {
         List<Solicitacao> novasSolicitacoes = solicitacaoService.criarSolicitacaoEmLote(dto);
         return ResponseEntity.status(HttpStatus.CREATED).body(novasSolicitacoes);
+    }
+
+    @PostMapping("/lote")
+    public ResponseEntity<List<Solicitacao>> criarSolicitacaoEmLote(@RequestBody SolicitacaoLoteRequestDTO dto) {
+        List<Solicitacao> solicitacoesCriadas = solicitacaoService.criarEmLote(dto);
+        return ResponseEntity.status(HttpStatus.CREATED).body(solicitacoesCriadas);
     }
 }
