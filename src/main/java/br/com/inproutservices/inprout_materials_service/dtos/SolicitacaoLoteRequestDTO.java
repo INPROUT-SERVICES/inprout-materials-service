@@ -5,7 +5,8 @@ import java.util.List;
 
 public record SolicitacaoLoteRequestDTO(
         Long osId,
-        Long lpuItemId,
+        Long lpuItemId, // ID da etapa/item da LPU
+        Long solicitanteId, // ADICIONADO: ID do usuário que está pedindo
         String observacoes,
         List<ItemLoteDTO> itens
 ) {
