@@ -4,14 +4,14 @@ import java.math.BigDecimal;
 import java.util.List;
 
 public record CriarSolicitacaoLoteDTO(
-        Long idSolicitante,
-        String justificativa,
+        Long osId,           // Movido para o nível principal (conforme cms.js)
+        Long lpuItemId,      // Movido para o nível principal
+        Long solicitanteId,  // Renomeado para bater com o padrão ou manter idSolicitante se o JSON mapear assim (cms.js envia 'solicitanteId')
+        String observacoes,  // cms.js envia 'observacoes' e não 'justificativa'
         List<ItemLoteRequest> itens
 ) {
     public record ItemLoteRequest(
-            Long osId,
-            Long lpuId,
-            Long materialId, // O material vem preenchido da linha
+            Long materialId,
             BigDecimal quantidade
     ) {}
 }

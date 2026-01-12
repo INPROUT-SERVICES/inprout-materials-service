@@ -1,11 +1,11 @@
 package br.com.inproutservices.inprout_materials_service.entities;
 
 import br.com.inproutservices.inprout_materials_service.enums.StatusSolicitacao;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 @Entity
 @Table(name = "solicitacoes")
@@ -15,65 +15,58 @@ public class Solicitacao {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "os_id", nullable = false)
-    private Long osId;
+    // IMPORTANT: Use EnumType.STRING to avoid issues with order changes
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private StatusSolicitacao status;
 
-    @Column(name = "lpu_id", nullable = false)
-    private Long lpuId;
-
-    @Column(name = "id_solicitante", nullable = false)
-    private Long solicitanteId;
-
-    @Column(name = "data_solicitacao", nullable = false, updatable = false)
+    @Column(name = "data_solicitacao", nullable = false)
     private LocalDateTime dataSolicitacao;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(name = "justificativa")
     private String justificativa;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 30)
-    private StatusSolicitacao status;
+    @Column(name = "observacao_reprovacao")
+    private String observacaoReprovacao;
+
+    @Column(name = "os_id")
+    private Long osId;
+
+    @Column(name = "lpu_id")
+    private Long lpuId;
+
+    @Column(name = "solicitante_id")
+    private Long solicitanteId;
+
+    @Column(name = "aprovador_id")
+    private Long aprovadorId;
 
     @OneToMany(mappedBy = "solicitacao", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
     private List<ItemSolicitacao> itens = new ArrayList<>();
 
-    // Construtor
-    public Solicitacao() {}
-
-    @PrePersist
-    public void prePersist() {
-        this.dataSolicitacao = LocalDateTime.now();
-        if (this.status == null) {
-            this.status = StatusSolicitacao.PENDENTE_COORDENADOR;
-        }
+    // --- 1. MANDATORY NO-ARG CONSTRUCTOR FOR HIBERNATE ---
+    public Solicitacao() {
     }
 
-    // --- Getters e Setters Básicos ---
+    // Getters and Setters...
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+    public StatusSolicitacao getStatus() { return status; }
+    public void setStatus(StatusSolicitacao status) { this.status = status; }
+    public LocalDateTime getDataSolicitacao() { return dataSolicitacao; }
+    public void setDataSolicitacao(LocalDateTime dataSolicitacao) { this.dataSolicitacao = dataSolicitacao; }
+    public String getJustificativa() { return justificativa; }
+    public void setJustificativa(String justificativa) { this.justificativa = justificativa; }
+    public String getObservacaoReprovacao() { return observacaoReprovacao; }
+    public void setObservacaoReprovacao(String observacaoReprovacao) { this.observacaoReprovacao = observacaoReprovacao; }
     public Long getOsId() { return osId; }
     public void setOsId(Long osId) { this.osId = osId; }
     public Long getLpuId() { return lpuId; }
     public void setLpuId(Long lpuId) { this.lpuId = lpuId; }
     public Long getSolicitanteId() { return solicitanteId; }
     public void setSolicitanteId(Long solicitanteId) { this.solicitanteId = solicitanteId; }
-    public LocalDateTime getDataSolicitacao() { return dataSolicitacao; }
-    public void setDataSolicitacao(LocalDateTime dataSolicitacao) { this.dataSolicitacao = dataSolicitacao; }
-    public String getJustificativa() { return justificativa; }
-    public void setJustificativa(String justificativa) { this.justificativa = justificativa; }
-    public StatusSolicitacao getStatus() { return status; }
-    public void setStatus(StatusSolicitacao status) { this.status = status; }
+    public Long getAprovadorId() { return aprovadorId; }
+    public void setAprovadorId(Long aprovadorId) { this.aprovadorId = aprovadorId; }
     public List<ItemSolicitacao> getItens() { return itens; }
     public void setItens(List<ItemSolicitacao> itens) { this.itens = itens; }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        Solicitacao that = (Solicitacao) o;
-        return Objects.equals(id, that.id);
-    }
-
-    @Override
-    public int hashCode() { return Objects.hash(id); }
 }
