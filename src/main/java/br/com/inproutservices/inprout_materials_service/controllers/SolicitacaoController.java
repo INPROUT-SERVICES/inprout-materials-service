@@ -6,6 +6,7 @@ import br.com.inproutservices.inprout_materials_service.dtos.response.Solicitaca
 import br.com.inproutservices.inprout_materials_service.dtos.DecisaoLoteDTO; // NOVO DTO
 import br.com.inproutservices.inprout_materials_service.entities.Solicitacao;
 import br.com.inproutservices.inprout_materials_service.services.SolicitacaoService;
+import br.com.inproutservices.inprout_materials_service.services.dtos.DecisaoItemDTO;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -61,6 +62,27 @@ public class SolicitacaoController {
     public ResponseEntity<List<Solicitacao>> criarLote(@RequestBody CriarSolicitacaoLoteDTO dto) {
         List<Solicitacao> novasSolicitacoes = solicitacaoService.criarSolicitacaoEmLote(dto);
         return ResponseEntity.status(HttpStatus.CREATED).body(novasSolicitacoes);
+    }
+
+    @PostMapping("/{idSolicitacao}/itens/{idItem}/decidir")
+    public ResponseEntity<Void> decidirItem(
+            @PathVariable Long idSolicitacao,
+            @PathVariable Long idItem,
+            @RequestBody @Valid DecisaoItemDTO dto, // @Valid ativa as anotações do DTO
+            @RequestHeader(value = "X-User-Role", required = false) String role) {
+
+        // Log de segurança/auditoria (opcional, mas recomendado)
+        // System.out.println("Usuário " + dto.aprovadorId() + " decidiu " + dto.acao() + " item " + idItem);
+
+        // Chama o serviço passando os dados limpos e validados
+        solicitacaoService.decidirItem(
+                idItem,
+                dto.acao(),          // "APROVAR" ou "REJEITAR"
+                dto.observacao(),    // Motivo (obrigatório se for REJEITAR, tratado no Service)
+                role                 // Role do usuário (COORDINATOR, MANAGER, etc)
+        );
+
+        return ResponseEntity.ok().build();
     }
 
 }

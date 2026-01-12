@@ -6,7 +6,9 @@ import br.com.inproutservices.inprout_materials_service.dtos.response.*;
 import br.com.inproutservices.inprout_materials_service.entities.ItemSolicitacao;
 import br.com.inproutservices.inprout_materials_service.entities.Material;
 import br.com.inproutservices.inprout_materials_service.entities.Solicitacao;
+import br.com.inproutservices.inprout_materials_service.enums.StatusItem;
 import br.com.inproutservices.inprout_materials_service.enums.StatusSolicitacao;
+import br.com.inproutservices.inprout_materials_service.repositories.ItemSolicitacaoRepository;
 import br.com.inproutservices.inprout_materials_service.repositories.MaterialRepository;
 import br.com.inproutservices.inprout_materials_service.repositories.SolicitacaoRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,6 +29,7 @@ public class SolicitacaoService {
 
     private final SolicitacaoRepository solicitacaoRepository;
     private final MaterialRepository materialRepository;
+    private final ItemSolicitacaoRepository itemSolicitacaoRepository;
     private final RestTemplate restTemplate;
 
     @Value("${app.monolith.url:http://app-backend:8080}")
@@ -34,9 +37,11 @@ public class SolicitacaoService {
 
     public SolicitacaoService(SolicitacaoRepository solicitacaoRepository,
                               MaterialRepository materialRepository,
+                              ItemSolicitacaoRepository itemSolicitacaoRepository, // <--- Adicione aqui
                               RestTemplate restTemplate) {
         this.solicitacaoRepository = solicitacaoRepository;
         this.materialRepository = materialRepository;
+        this.itemSolicitacaoRepository = itemSolicitacaoRepository; // <--- E aqui
         this.restTemplate = restTemplate;
     }
 
@@ -123,18 +128,17 @@ public class SolicitacaoService {
     }
 
     private void aprovarFinal(Solicitacao s) {
-        s.setStatus(StatusSolicitacao.APROVADO); // ou FINALIZADO
+        s.setStatus(StatusSolicitacao.APROVADO);
 
-        // Calcula o custo total desta solicitação
         BigDecimal custoTotal = BigDecimal.ZERO;
         for (ItemSolicitacao item : s.getItens()) {
-            if (item.getMaterial().getCustoMedioPonderado() != null) {
+            // SÓ SOMA O CUSTO SE O ITEM ESTIVER APROVADO
+            if (item.getStatusItem() == StatusItem.APROVADO && item.getMaterial().getCustoMedioPonderado() != null) {
                 BigDecimal custoItem = item.getMaterial().getCustoMedioPonderado().multiply(item.getQuantidadeSolicitada());
                 custoTotal = custoTotal.add(custoItem);
             }
         }
 
-        // Soma na OS (Integração)
         if (s.getOsId() != null && custoTotal.compareTo(BigDecimal.ZERO) > 0) {
             atualizarFinanceiroMonolito(s.getOsId(), custoTotal);
         }
@@ -190,5 +194,129 @@ public class SolicitacaoService {
                 lpuDto,
                 s.getItens()
         );
+    }
+
+    @Transactional
+    public void aprovarParcialmente(Long solicitacaoId, List<Long> idsItensAprovados, String role) {
+        Solicitacao solicitacao = solicitacaoRepository.findById(solicitacaoId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Solicitação não encontrada"));
+
+        // 1. Identificar itens que NÃO foram aprovados (Rejeitados)
+        List<ItemSolicitacao> itensRejeitados = solicitacao.getItens().stream()
+                .filter(item -> !idsItensAprovados.contains(item.getId()))
+                .collect(Collectors.toList());
+
+        // 2. Devolver saldo ao estoque e remover da solicitação
+        for (ItemSolicitacao item : itensRejeitados) {
+            Material material = item.getMaterial();
+            // Devolve a quantidade reservada
+            material.setSaldoFisico(material.getSaldoFisico().add(item.getQuantidadeSolicitada()));
+            materialRepository.save(material);
+
+            // Remove da lista da solicitação (O orphanRemoval=true na entidade fará o delete no banco)
+            solicitacao.getItens().remove(item);
+        }
+
+        // 3. Verifica se sobrou algo
+        if (solicitacao.getItens().isEmpty()) {
+            // Se rejeitou todos os itens, o pedido vira REPROVADO automaticamente
+            solicitacao.setStatus(StatusSolicitacao.REPROVADO);
+            solicitacao.setObservacaoReprovacao("Todos os itens foram rejeitados individualmente.");
+        } else {
+            // Se sobrou itens, segue o fluxo normal de aprovação
+            if ("COORDINATOR".equals(role)) {
+                solicitacao.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
+            } else {
+                aprovarFinal(solicitacao); // Seu método existente que gera custo e finaliza
+            }
+        }
+
+        solicitacaoRepository.save(solicitacao);
+    }
+
+    @Transactional
+    public void decidirItem(Long itemId, String acao, String observacao, String role) {
+        // 1. Validações de Negócio
+        if (role == null || role.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Permissão não identificada (Role ausente).");
+        }
+
+        // Se for REJEITAR, a observação é obrigatória (Regra de Negócio comum)
+        if ("REJEITAR".equals(acao) && (observacao == null || observacao.trim().isEmpty())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Para rejeitar um item, é obrigatório informar o motivo.");
+        }
+
+        ItemSolicitacao item = itemSolicitacaoRepository.findById(itemId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item de solicitação não encontrado"));
+
+        Solicitacao solicitacao = item.getSolicitacao();
+        String roleUpper = role.toUpperCase();
+
+        // 2. Lógica de Decisão (A mesma que desenhamos antes, agora segura)
+        if ("REJEITAR".equals(acao)) {
+            item.setStatusItem(StatusItem.REPROVADO);
+            item.setMotivoRecusa(observacao);
+
+            // Devolve ao estoque imediatamente
+            Material m = item.getMaterial();
+            m.setSaldoFisico(m.getSaldoFisico().add(item.getQuantidadeSolicitada()));
+            materialRepository.save(m);
+
+        } else if ("APROVAR".equals(acao)) {
+            item.setStatusItem(StatusItem.APROVADO);
+            // Limpa motivo de recusa caso tenha sido recusado anteriormente e re-aprovado (revisão)
+            item.setMotivoRecusa(null);
+        } else {
+            // Caso a validação do DTO falhe ou algo estranho chegue aqui
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Ação inválida: " + acao);
+        }
+
+        itemSolicitacaoRepository.save(item);
+
+        // 3. Verifica o Pai (Solicitação)
+        verificarEAvancarFase(solicitacao, roleUpper);
+    }
+
+    private void verificarEAvancarFase(Solicitacao s, String role) {
+        boolean todosProcessados = s.getItens().stream()
+                .allMatch(i -> i.getStatusItem() != StatusItem.PENDENTE);
+
+        // Se ainda tem item pendente nessa solicitação, o Pai não muda de status
+        // (Isso atende ao requisito: "deixar o outro parado")
+        if (!todosProcessados) return;
+
+        // Se todos foram decididos (Aprovados ou Reprovados)
+
+        if (role.equals("COORDINATOR") || role.equals("MANAGER")) {
+            // Se o Coordenador terminou tudo, vai para o Controller
+            // Mas só se sobrou algum item APROVADO. Se tudo foi reprovado, o pedido morre.
+            boolean temItemAprovado = s.getItens().stream().anyMatch(i -> i.getStatusItem() == StatusItem.APROVADO);
+
+            if (temItemAprovado) {
+                s.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
+                // Resetar status dos itens para PENDENTE para o Controller avaliar?
+                // OU manter APROVADO e o Controller só valida os aprovados?
+                // Sugestão: Manter APROVADO e o Controller revalida.
+                // Mas para simplicidade visual, vamos resetar o status dos itens APROVADOS para PENDENTE
+                // para que o Controller tenha que votar neles novamente.
+                s.getItens().stream()
+                        .filter(i -> i.getStatusItem() == StatusItem.APROVADO)
+                        .forEach(i -> i.setStatusItem(StatusItem.PENDENTE));
+            } else {
+                s.setStatus(StatusSolicitacao.REPROVADO); // Tudo foi recusado
+            }
+
+        } else if (role.equals("CONTROLLER") || role.equals("ADMIN")) {
+            // Controller finalizou tudo
+            boolean temItemAprovado = s.getItens().stream().anyMatch(i -> i.getStatusItem() == StatusItem.APROVADO);
+
+            if (temItemAprovado) {
+                aprovarFinal(s); // Método que já existe, mas precisa ser ajustado para somar SÓ itens APROVADOS
+            } else {
+                s.setStatus(StatusSolicitacao.REPROVADO);
+            }
+        }
+
+        solicitacaoRepository.save(s);
     }
 }
