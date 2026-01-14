@@ -1,12 +1,12 @@
 package br.com.inproutservices.inprout_materials_service.controllers;
 
 import br.com.inproutservices.inprout_materials_service.dtos.CriarSolicitacaoLoteDTO;
-import br.com.inproutservices.inprout_materials_service.dtos.SolicitacaoLoteRequestDTO;
+import br.com.inproutservices.inprout_materials_service.dtos.DecisaoLoteDTO;
 import br.com.inproutservices.inprout_materials_service.dtos.response.SolicitacaoResponseDTO;
-import br.com.inproutservices.inprout_materials_service.dtos.DecisaoLoteDTO; // NOVO DTO
 import br.com.inproutservices.inprout_materials_service.entities.Solicitacao;
 import br.com.inproutservices.inprout_materials_service.services.SolicitacaoService;
 import br.com.inproutservices.inprout_materials_service.services.dtos.DecisaoItemDTO;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,6 +15,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/materiais/solicitacoes")
+@CrossOrigin(originPatterns = "*") // permite chamadas do front (ex.: localhost:8080 -> localhost:8081)
 public class SolicitacaoController {
 
     private final SolicitacaoService solicitacaoService;
@@ -23,8 +24,11 @@ public class SolicitacaoController {
         this.solicitacaoService = solicitacaoService;
     }
 
-    // --- CORREÇÃO DO ERRO 404 ---
-    @GetMapping("/pendentes")
+    /**
+     * Lista pendências para o papel informado em X-User-Role.
+     * Mantém compatibilidade com "/pendentes" e também aceita "/pendencias" (PT-BR) para evitar 404 por typo.
+     */
+    @GetMapping({"/pendentes", "/pendencias"})
     public ResponseEntity<List<SolicitacaoResponseDTO>> listarPendentes(
             @RequestHeader(value = "X-User-Role", required = false) String userRole) {
 
@@ -32,7 +36,7 @@ public class SolicitacaoController {
         return ResponseEntity.ok(lista);
     }
 
-    // --- NOVOS ENDPOINTS PARA APROVAÇÃO EM LOTE ---
+    // --- ENDPOINTS PARA APROVAÇÃO EM LOTE ---
     @PostMapping("/coordenador/aprovar-lote")
     public ResponseEntity<Void> aprovarLoteCoordenador(@RequestBody DecisaoLoteDTO dto) {
         solicitacaoService.processarLote(dto, "APROVAR", "COORDINATOR");
@@ -57,7 +61,7 @@ public class SolicitacaoController {
         return ResponseEntity.ok().build();
     }
 
-    // --- MÉTODOS ANTIGOS ---
+    // --- MÉTODOS ANTIGOS / COMPATIBILIDADE ---
     @PostMapping("/lote")
     public ResponseEntity<List<Solicitacao>> criarLote(@RequestBody CriarSolicitacaoLoteDTO dto) {
         List<Solicitacao> novasSolicitacoes = solicitacaoService.criarSolicitacaoEmLote(dto);
@@ -68,21 +72,16 @@ public class SolicitacaoController {
     public ResponseEntity<Void> decidirItem(
             @PathVariable Long idSolicitacao,
             @PathVariable Long idItem,
-            @RequestBody @Valid DecisaoItemDTO dto, // @Valid ativa as anotações do DTO
+            @RequestBody @Valid DecisaoItemDTO dto,
             @RequestHeader(value = "X-User-Role", required = false) String role) {
 
-        // Log de segurança/auditoria (opcional, mas recomendado)
-        // System.out.println("Usuário " + dto.aprovadorId() + " decidiu " + dto.acao() + " item " + idItem);
-
-        // Chama o serviço passando os dados limpos e validados
         solicitacaoService.decidirItem(
                 idItem,
                 dto.acao(),          // "APROVAR" ou "REJEITAR"
-                dto.observacao(),    // Motivo (obrigatório se for REJEITAR, tratado no Service)
-                role                 // Role do usuário (COORDINATOR, MANAGER, etc)
+                dto.observacao(),    // Motivo (obrigatório se for REJEITAR)
+                role
         );
 
         return ResponseEntity.ok().build();
     }
-
 }
