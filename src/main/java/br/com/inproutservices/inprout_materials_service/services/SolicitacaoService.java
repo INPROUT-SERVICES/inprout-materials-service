@@ -65,10 +65,6 @@ public class SolicitacaoService {
             Material material = materialRepository.findById(itemDto.materialId())
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Material não encontrado: " + itemDto.materialId()));
 
-            // Reserva/Baixa Estoque Imediata
-            if (material.getSaldoFisico().compareTo(itemDto.quantidade()) < 0) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Saldo insuficiente para o material: " + material.getDescricao());
-            }
             material.setSaldoFisico(material.getSaldoFisico().subtract(itemDto.quantidade()));
             materialRepository.save(material);
 
