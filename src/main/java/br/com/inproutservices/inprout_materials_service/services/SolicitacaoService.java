@@ -297,22 +297,22 @@ public class SolicitacaoService {
 
     @SuppressWarnings("unchecked")
     private LpuDTO montarLpuDTO(Long lpuId) {
-        // ID do LPU aqui refere-se ao 'OsLpuDetalhe' (item da OS), de onde pegamos o Objeto Contratado.
+        // ID do LPU aqui refere-se ao 'OsLpuDetalhe', de onde pegamos o Objeto Contratado.
         if (lpuId == null || lpuId == 0) return new LpuDTO(0L, "Contrato não informado", "-");
 
         for (String base : monolithBaseUrls()) {
-            // Novo endpoint criado no monolito: /os/detalhes/{id}
+            // Chama o endpoint que criamos no OsController do Monolito
             String url = base + "/os/detalhes/" + lpuId;
             Map<String, Object> map = tryGetMap(url);
 
             if (map != null && map.get("objetoContratado") != null) {
                 String objContratado = asString(map.get("objetoContratado"));
-                // Usamos o campo 'nome' do DTO para passar o Objeto Contratado para o Front
+                // O front-end usa o campo 'nome' do DTO para exibir essa info
                 return new LpuDTO(lpuId, objContratado, "-");
             }
         }
         return new LpuDTO(lpuId, "Objeto não encontrado", "-");
-    }
+    }git add .
 
     @SuppressWarnings("unchecked")
     private String montarNomeSolicitante(Long solicitanteId) {
