@@ -1,3 +1,5 @@
+// inprout-services/inprout-materials-service/inprout-materials-service-86d2030c50623b44027549cb71c59c71980ee568/src/main/java/br/com/inproutservices/inprout_materials_service/services/SolicitacaoService.java
+
 package br.com.inproutservices.inprout_materials_service.services;
 
 import br.com.inproutservices.inprout_materials_service.dtos.CriarSolicitacaoLoteDTO;
@@ -202,7 +204,6 @@ public class SolicitacaoService {
 
         BigDecimal custoTotal = BigDecimal.ZERO;
         for (ItemSolicitacao item : s.getItens()) {
-            // SÓ SOMA O CUSTO SE O ITEM ESTIVER APROVADO
             if (item.getStatusItem() == StatusItem.APROVADO && item.getMaterial().getCustoMedioPonderado() != null) {
                 BigDecimal custoItem = item.getMaterial().getCustoMedioPonderado().multiply(item.getQuantidadeSolicitada());
                 custoTotal = custoTotal.add(custoItem);
@@ -241,8 +242,8 @@ public class SolicitacaoService {
 
     private SolicitacaoResponseDTO converterParaDTO(Solicitacao s) {
         OsDTO osDto = montarOsDTO(s.getOsId());
-        LpuDTO lpuDto = montarLpuDTO(s.getLpuId());
-        String nomeSolicitante = montarNomeSolicitante(s.getSolicitanteId());
+        LpuDTO lpuDto = montarLpuDTO(s.getLpuId()); // Agora busca o objeto contratado
+        String nomeSolicitante = montarNomeSolicitante(s.getSolicitanteId()); // Agora busca o nome real
 
         return new SolicitacaoResponseDTO(
                 s.getId(),
@@ -273,9 +274,10 @@ public class SolicitacaoService {
                 Long id = asLong(map.get("id"));
                 if (id == null) id = osId;
 
+                // Garante que busca o campo string 'os' corretamente
                 String osNumero = firstNonBlank(
-                        asString(map.get("os")), asString(map.get("numeroOS")), asString(map.get("numeroOs")),
-                        asString(map.get("numero")), asString(map.get("codigo")), asString(map.get("identificador"))
+                        asString(map.get("os")), asString(map.get("numeroOS")),
+                        asString(map.get("numero")), asString(map.get("codigo"))
                 );
                 if (osNumero == null) osNumero = osNumeroFallback;
 
@@ -293,24 +295,35 @@ public class SolicitacaoService {
         return fallback;
     }
 
+    @SuppressWarnings("unchecked")
     private LpuDTO montarLpuDTO(Long lpuId) {
-        if (lpuId == null) return new LpuDTO(0L, "-", "-");
-        return new LpuDTO(lpuId, "Item LPU", "-");
+        // ID do LPU aqui refere-se ao 'OsLpuDetalhe' (item da OS), de onde pegamos o Objeto Contratado.
+        if (lpuId == null || lpuId == 0) return new LpuDTO(0L, "Contrato não informado", "-");
+
+        for (String base : monolithBaseUrls()) {
+            // Novo endpoint criado no monolito: /os/detalhes/{id}
+            String url = base + "/os/detalhes/" + lpuId;
+            Map<String, Object> map = tryGetMap(url);
+
+            if (map != null && map.get("objetoContratado") != null) {
+                String objContratado = asString(map.get("objetoContratado"));
+                // Usamos o campo 'nome' do DTO para passar o Objeto Contratado para o Front
+                return new LpuDTO(lpuId, objContratado, "-");
+            }
+        }
+        return new LpuDTO(lpuId, "Objeto não encontrado", "-");
     }
 
     @SuppressWarnings("unchecked")
     private String montarNomeSolicitante(Long solicitanteId) {
         if (solicitanteId == null) return "Não informado";
         for (String base : monolithBaseUrls()) {
-            String[] paths = new String[]{
-                    "/api/usuarios/" + solicitanteId, "/usuarios/" + solicitanteId,
-                    "/api/users/" + solicitanteId, "/users/" + solicitanteId
-            };
-            for (String path : paths) {
-                Map<String, Object> map = tryGetMap(base + path);
-                if (map == null || map.isEmpty()) continue;
-                String nome = firstNonBlank(asString(map.get("nome")), asString(map.get("name")), asString(map.get("username")));
-                if (nome != null) return nome;
+            // Novo endpoint criado: /usuarios/{id}
+            String url = base + "/usuarios/" + solicitanteId;
+            Map<String, Object> map = tryGetMap(url);
+
+            if (map != null && map.get("nome") != null) {
+                return asString(map.get("nome"));
             }
         }
         return "Solicitante #" + solicitanteId;
