@@ -312,7 +312,7 @@ public class SolicitacaoService {
             }
         }
         return new LpuDTO(lpuId, "Objeto não encontrado", "-");
-    }git add .
+    }
 
     @SuppressWarnings("unchecked")
     private String montarNomeSolicitante(Long solicitanteId) {
