@@ -28,12 +28,12 @@ public class SolicitacaoController {
      * Lista pendências para o papel informado em X-User-Role.
      * Mantém compatibilidade com "/pendentes" e também aceita "/pendencias" (PT-BR) para evitar 404 por typo.
      */
-    @GetMapping({"/pendentes", "/pendencias"})
+    @GetMapping("/pendentes")
     public ResponseEntity<List<SolicitacaoResponseDTO>> listarPendentes(
-            @RequestHeader(value = "X-User-Role", required = false) String userRole) {
+            @RequestHeader(value = "X-User-Role", required = false) String userRole,
+            @RequestHeader(value = "X-User-Id", required = false) Long userId) { // <--- Adicionado userId aqui
 
-        List<SolicitacaoResponseDTO> lista = solicitacaoService.listarPendentes(userRole);
-        return ResponseEntity.ok(lista);
+        return ResponseEntity.ok(solicitacaoService.listarPendentes(userRole, userId));
     }
 
     @GetMapping("/historico")
