@@ -31,7 +31,7 @@ public class SolicitacaoService {
     private final ItemSolicitacaoRepository itemSolicitacaoRepository;
     private final RestTemplate restTemplate;
 
-    @Value("${app.monolith.url:http://app-backend:8080}")
+    @Value("${app.monolith.url:http://inprout-monolito-homolog:8080}")
     private String monolithUrl;
 
     public SolicitacaoService(SolicitacaoRepository solicitacaoRepository,
@@ -44,7 +44,6 @@ public class SolicitacaoService {
         this.restTemplate = restTemplate;
     }
 
-    // --- CRIAÇÃO ---
     @Transactional
     public List<Solicitacao> criarSolicitacaoEmLote(CriarSolicitacaoLoteDTO dto) {
         Solicitacao solicitacao = new Solicitacao();
@@ -55,14 +54,11 @@ public class SolicitacaoService {
         solicitacao.setStatus(StatusSolicitacao.PENDENTE_COORDENADOR);
         solicitacao.setDataSolicitacao(LocalDateTime.now());
 
-        if (solicitacao.getItens() == null) {
-            solicitacao.setItens(new ArrayList<>());
-        }
+        if (solicitacao.getItens() == null) solicitacao.setItens(new ArrayList<>());
 
         for (CriarSolicitacaoLoteDTO.ItemLoteRequest itemDto : dto.itens()) {
             Material material = materialRepository.findById(itemDto.materialId())
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Material não encontrado: " + itemDto.materialId()));
-
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Material não encontrado"));
             material.setSaldoFisico(material.getSaldoFisico().subtract(itemDto.quantidade()));
             materialRepository.save(material);
 
@@ -70,27 +66,25 @@ public class SolicitacaoService {
             item.setStatusItem(StatusItem.PENDENTE);
             solicitacao.getItens().add(item);
         }
-
-        Solicitacao salva = solicitacaoRepository.save(solicitacao);
-        return List.of(salva);
+        return List.of(solicitacaoRepository.save(solicitacao));
     }
 
-    // --- LISTAGEM COM FILTRO DE SEGMENTO E STATUS ---
     public List<SolicitacaoResponseDTO> listarPendentes(String userRole, Long userId) {
         if (userRole == null) return new ArrayList<>();
-        String roleUpper = userRole.toUpperCase();
+
+        // --- LOG DE DEBUG ---
+        // System.out.println("Listando pendentes para: " + userRole);
+
         List<Solicitacao> todas = solicitacaoRepository.findAll();
 
-        // 1. Controller/Admin vê tudo que é da fase dele
-        if ("CONTROLLER".equals(roleUpper) || "ADMIN".equals(roleUpper)) {
+        if ("CONTROLLER".equalsIgnoreCase(userRole) || "ADMIN".equalsIgnoreCase(userRole)) {
             return todas.stream()
                     .filter(s -> s.getStatus() == StatusSolicitacao.PENDENTE_CONTROLLER)
                     .map(this::converterParaDTO)
                     .collect(Collectors.toList());
         }
 
-        // 2. Coordenador vê status dele + Filtro de Segmento
-        if ("COORDINATOR".equals(roleUpper)) {
+        if ("COORDINATOR".equalsIgnoreCase(userRole)) {
             Long segmentoUsuario = buscarSegmentoDoUsuario(userId);
             return todas.stream()
                     .filter(s -> s.getStatus() == StatusSolicitacao.PENDENTE_COORDENADOR)
@@ -98,7 +92,6 @@ public class SolicitacaoService {
                     .map(this::converterParaDTO)
                     .collect(Collectors.toList());
         }
-
         return new ArrayList<>();
     }
 
@@ -113,55 +106,47 @@ public class SolicitacaoService {
 
     private boolean ehPendenteParaRole(Solicitacao s, String role) {
         if (role == null) return false;
-        String r = role.toUpperCase();
-        if (r.equals("COORDINATOR")) return s.getStatus() == StatusSolicitacao.PENDENTE_COORDENADOR;
-        if (r.equals("CONTROLLER") || r.equals("ADMIN")) return s.getStatus() == StatusSolicitacao.PENDENTE_CONTROLLER;
+        if ("COORDINATOR".equalsIgnoreCase(role)) return s.getStatus() == StatusSolicitacao.PENDENTE_COORDENADOR;
+        if ("CONTROLLER".equalsIgnoreCase(role) || "ADMIN".equalsIgnoreCase(role)) return s.getStatus() == StatusSolicitacao.PENDENTE_CONTROLLER;
         return false;
     }
 
-    // --- PROCESSAMENTO EM LOTE POR ITEM ---
     @Transactional
     public void processarLote(DecisaoLoteDTO dto, String acao, String role) {
-        // Busca Itens (e não Solicitações) para garantir ação granular
+        System.out.println(">>> PROCESSAR LOTE INICIADO. Ação: " + acao + " | Role: " + role);
+
         List<ItemSolicitacao> itens = itemSolicitacaoRepository.findAllById(dto.ids());
-        String roleUpper = role.toUpperCase();
         Set<Solicitacao> solicitacoesAfetadas = new HashSet<>();
 
         for (ItemSolicitacao item : itens) {
-            if ("APROVAR".equals(acao)) {
+            if ("APROVAR".equalsIgnoreCase(acao)) {
                 if (item.getStatusItem() == StatusItem.PENDENTE) {
                     item.setStatusItem(StatusItem.APROVADO);
                     solicitacoesAfetadas.add(item.getSolicitacao());
                 }
-            } else if ("REJEITAR".equals(acao)) {
+            } else if ("REJEITAR".equalsIgnoreCase(acao)) {
                 item.setStatusItem(StatusItem.REPROVADO);
                 item.setMotivoRecusa(dto.observacao());
-
-                // Devolve estoque
                 Material m = item.getMaterial();
                 m.setSaldoFisico(m.getSaldoFisico().add(item.getQuantidadeSolicitada()));
                 materialRepository.save(m);
-
                 solicitacoesAfetadas.add(item.getSolicitacao());
             }
         }
         itemSolicitacaoRepository.saveAll(itens);
 
-        // Verifica progresso de cada solicitação afetada
         for (Solicitacao s : solicitacoesAfetadas) {
-            avancarFase(s, roleUpper);
+            avancarFase(s, role);
         }
     }
 
-    // --- DECISÃO INDIVIDUAL ---
     @Transactional
     public void decidirItem(Long itemId, String acao, String observacao, String role) {
-        ItemSolicitacao item = itemSolicitacaoRepository.findById(itemId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        System.out.println(">>> DECIDIR ITEM INICIADO. ID: " + itemId + " | Ação: " + acao + " | Role: " + role);
 
-        String roleUpper = (role != null) ? role.toUpperCase() : "";
+        ItemSolicitacao item = itemSolicitacaoRepository.findById(itemId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
 
-        if ("REJEITAR".equals(acao)) {
+        if ("REJEITAR".equalsIgnoreCase(acao)) {
             item.setStatusItem(StatusItem.REPROVADO);
             item.setMotivoRecusa(observacao);
             Material m = item.getMaterial();
@@ -171,37 +156,43 @@ public class SolicitacaoService {
             item.setStatusItem(StatusItem.APROVADO);
         }
         itemSolicitacaoRepository.save(item);
-
-        avancarFase(item.getSolicitacao(), roleUpper);
+        avancarFase(item.getSolicitacao(), role);
     }
 
-    // --- LÓGICA DE TRANSIÇÃO DE FASE (CORRIGIDA) ---
     private void avancarFase(Solicitacao s, String role) {
-        // REGRA 1: Se existe algum item PENDENTE, não avança.
+        System.out.println(">>> VERIFICANDO AVANÇO DE FASE. Status Atual: " + s.getStatus());
+
+        // 1. Verifica se tem algum pendente
         boolean existePendente = s.getItens().stream().anyMatch(i -> i.getStatusItem() == StatusItem.PENDENTE);
         if (existePendente) {
+            System.out.println(">>> AINDA HÁ ITENS PENDENTES. NÃO AVANÇA.");
             solicitacaoRepository.save(s);
             return;
         }
 
-        // REGRA 2: Se todos foram REPROVADOS, finaliza como Reprovado.
-        boolean todosReprovados = s.getItens().stream().allMatch(i -> i.getStatusItem() == StatusItem.REPROVADO);
-        if (todosReprovados) {
+        // 2. Se tudo foi rejeitado
+        boolean todosRejeitados = s.getItens().stream().allMatch(i -> i.getStatusItem() == StatusItem.REPROVADO);
+        if (todosRejeitados) {
             s.setStatus(StatusSolicitacao.REPROVADO);
             solicitacaoRepository.save(s);
             return;
         }
 
-        // REGRA 3: Avança fase
-        if (role.equals("COORDINATOR")) {
+        // 3. Logica de papéis (AGORA USANDO IGNORE CASE)
+        if ("COORDINATOR".equalsIgnoreCase(role)) {
+            System.out.println(">>> COORDENADOR APROVOU. AVANÇANDO PARA CONTROLLER.");
             s.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
-            // Reseta APROVADOS para PENDENTE para o Controller validar
             s.getItens().stream()
                     .filter(i -> i.getStatusItem() == StatusItem.APROVADO)
                     .forEach(i -> i.setStatusItem(StatusItem.PENDENTE));
-        } else if (role.equals("CONTROLLER") || role.equals("ADMIN")) {
+
+        } else if ("CONTROLLER".equalsIgnoreCase(role) || "ADMIN".equalsIgnoreCase(role)) {
+            System.out.println(">>> CONTROLLER APROVOU FINAL. CHAMANDO INTEGRAÇÃO...");
             aprovarFinal(s);
+        } else {
+            System.out.println(">>> ROLE NÃO RECONHECIDA PARA AVANÇO: " + role);
         }
+
         solicitacaoRepository.save(s);
     }
 
@@ -211,29 +202,43 @@ public class SolicitacaoService {
 
         for (ItemSolicitacao item : s.getItens()) {
             if (item.getStatusItem() == StatusItem.APROVADO) {
-                BigDecimal preco = item.getMaterial().getCustoMedioPonderado();
-                if (preco == null) preco = BigDecimal.ZERO;
-                custoTotal = custoTotal.add(preco.multiply(item.getQuantidadeSolicitada()));
+                BigDecimal preco = item.getMaterial().getCustoMedioPonderado() != null ? item.getMaterial().getCustoMedioPonderado() : BigDecimal.ZERO;
+                BigDecimal qtd = item.getQuantidadeSolicitada() != null ? item.getQuantidadeSolicitada() : BigDecimal.ZERO;
+                custoTotal = custoTotal.add(preco.multiply(qtd));
             }
         }
 
-        if (s.getOsId() != null && custoTotal.compareTo(BigDecimal.ZERO) > 0) {
+        System.out.println(">>> CUSTO CALCULADO: R$ " + custoTotal);
+        if (s.getOsId() != null) {
             atualizarFinanceiroMonolito(s.getOsId(), custoTotal);
         }
     }
 
     private void atualizarFinanceiroMonolito(Long osId, BigDecimal valor) {
-        try {
-            // URL corrigida para o OsController do monolito (/os/)
-            String url = monolithUrl + "/os/" + osId + "/adicionar-custo-material";
-            restTemplate.postForLocation(url, valor);
-        } catch (Exception e) {
-            System.err.println("ERRO INTEGRACAO OS " + osId + ": " + e.getMessage());
+        List<String> urlsToTry = new ArrayList<>();
+        urlsToTry.add("http://inprout-monolito-homolog:8080/os/" + osId + "/adicionar-custo-material");
+        urlsToTry.add(monolithUrl + "/os/" + osId + "/adicionar-custo-material");
+
+        boolean sucesso = false;
+
+        for (String url : urlsToTry) {
+            if (sucesso) break;
+            try {
+                System.out.println(">>> TENTANDO POST EM: " + url);
+                org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+                headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+                org.springframework.http.HttpEntity<BigDecimal> request = new org.springframework.http.HttpEntity<>(valor, headers);
+
+                restTemplate.postForLocation(url, request);
+                System.out.println(">>> SUCESSO! VALOR INTEGRADO.");
+                sucesso = true;
+            } catch (Exception e) {
+                System.out.println(">>> FALHA EM " + url + ": " + e.getMessage());
+            }
         }
     }
 
-    // --- MÉTODOS DE SUPORTE E INTEGRAÇÃO ---
-
+    // --- MÉTODOS DE DTO (Mantidos iguais) ---
     private Long buscarSegmentoDoUsuario(Long userId) {
         if (userId == null) return null;
         try {
@@ -247,7 +252,7 @@ public class SolicitacaoService {
     }
 
     private boolean pertenceAoSegmento(Solicitacao s, Long segmentoUsuario) {
-        if (segmentoUsuario == null) return true; // Se usuário não tem segmento, vê tudo (ou ajuste conforme regra)
+        if (segmentoUsuario == null) return true;
         OsDTO os = montarOsDTO(s.getOsId());
         return os.segmento() != null && segmentoUsuario.equals(os.segmento().id());
     }
@@ -263,19 +268,17 @@ public class SolicitacaoService {
     private OsDTO montarOsDTO(Long osId) {
         SegmentoDTO fallbackSeg = new SegmentoDTO(0L, "-");
         if (osId == null) return new OsDTO(null, "N/A", fallbackSeg);
-
-        for (String base : List.of(monolithUrl, "http://localhost:8080")) {
-            String[] paths = {"/os/" + osId, "/api/os/" + osId};
-            for (String path : paths) {
-                Map<String, Object> map = tryGetMap(base + path);
-                if (map != null && !map.isEmpty()) {
-                    String num = firstNonBlank(asString(map.get("os")), asString(map.get("numeroOS")), String.valueOf(osId));
-                    SegmentoDTO seg = fallbackSeg;
-                    if (map.get("segmento") instanceof Map segMap) {
-                        seg = new SegmentoDTO(asLong(segMap.get("id")), firstNonBlank(asString(segMap.get("nome")), "-"));
-                    }
-                    return new OsDTO(asLong(map.get("id")), num, seg);
+        String[] baseUrls = {"http://inprout-monolito-homolog:8080", monolithUrl};
+        for (String base : baseUrls) {
+            String url = base + "/os/" + osId;
+            Map<String, Object> map = tryGetMap(url);
+            if (map != null && !map.isEmpty()) {
+                String num = firstNonBlank(asString(map.get("os")), asString(map.get("numeroOS")), String.valueOf(osId));
+                SegmentoDTO seg = fallbackSeg;
+                if (map.get("segmento") instanceof Map segMap) {
+                    seg = new SegmentoDTO(asLong(segMap.get("id")), firstNonBlank(asString(segMap.get("nome")), "-"));
                 }
+                return new OsDTO(asLong(map.get("id")), num, seg);
             }
         }
         return new OsDTO(osId, String.valueOf(osId), fallbackSeg);
