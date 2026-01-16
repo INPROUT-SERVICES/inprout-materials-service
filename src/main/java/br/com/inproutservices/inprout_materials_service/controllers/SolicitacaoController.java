@@ -36,6 +36,15 @@ public class SolicitacaoController {
         return ResponseEntity.ok(lista);
     }
 
+    @GetMapping("/historico")
+    public ResponseEntity<List<SolicitacaoResponseDTO>> listarHistorico(
+            @RequestHeader(value = "X-User-Role", required = false) String userRole,
+            @RequestHeader(value = "X-User-ID", required = false) Long userId) {
+
+        List<SolicitacaoResponseDTO> lista = solicitacaoService.listarHistorico(userRole, userId);
+        return ResponseEntity.ok(lista);
+    }
+
     // --- ENDPOINTS PARA APROVAÇÃO EM LOTE ---
     @PostMapping("/coordenador/aprovar-lote")
     public ResponseEntity<Void> aprovarLoteCoordenador(@RequestBody DecisaoLoteDTO dto) {

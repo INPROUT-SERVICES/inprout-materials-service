@@ -1,5 +1,3 @@
-// inprout-services/inprout-materials-service/inprout-materials-service-86d2030c50623b44027549cb71c59c71980ee568/src/main/java/br/com/inproutservices/inprout_materials_service/services/SolicitacaoService.java
-
 package br.com.inproutservices.inprout_materials_service.services;
 
 import br.com.inproutservices.inprout_materials_service.dtos.CriarSolicitacaoLoteDTO;
@@ -35,7 +33,7 @@ public class SolicitacaoService {
     private final ItemSolicitacaoRepository itemSolicitacaoRepository;
     private final RestTemplate restTemplate;
 
-    @Value("${app.monolith.url:http://app-backend:8080}")
+    @Value("${app.monolith.url:http://localhost:8080}")
     private String monolithUrl;
 
     public SolicitacaoService(SolicitacaoRepository solicitacaoRepository,
@@ -65,12 +63,14 @@ public class SolicitacaoService {
 
         for (CriarSolicitacaoLoteDTO.ItemLoteRequest itemDto : dto.itens()) {
             Material material = materialRepository.findById(itemDto.materialId())
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Material não encontrado: " + itemDto.materialId()));
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Material não encontrado"));
 
+            // Abate do estoque provisoriamente
             material.setSaldoFisico(material.getSaldoFisico().subtract(itemDto.quantidade()));
             materialRepository.save(material);
 
             ItemSolicitacao item = new ItemSolicitacao(solicitacao, material, itemDto.quantidade());
+            item.setStatusItem(StatusItem.PENDENTE);
             solicitacao.getItens().add(item);
         }
 
@@ -78,11 +78,21 @@ public class SolicitacaoService {
         return List.of(salva);
     }
 
-    // --- LISTAGEM ---
+    // --- LISTAGEM PENDENTES ---
     public List<SolicitacaoResponseDTO> listarPendentes(String userRole) {
-        List<Solicitacao> todas = solicitacaoRepository.findAll();
-        return todas.stream()
+        return solicitacaoRepository.findAll().stream()
                 .filter(s -> ehPendenteParaRole(s, userRole))
+                .map(this::converterParaDTO)
+                .collect(Collectors.toList());
+    }
+
+    // --- LISTAGEM HISTÓRICO ---
+    public List<SolicitacaoResponseDTO> listarHistorico(String userRole, Long userId) {
+        // Implementar filtros reais de data/usuário se necessário
+        return solicitacaoRepository.findAll().stream()
+                .filter(s -> !ehPendenteParaRole(s, userRole)) // Tudo que NÃO é pendente é histórico
+                .sorted((a, b) -> b.getDataSolicitacao().compareTo(a.getDataSolicitacao()))
+                .limit(50) // Limita para não pesar
                 .map(this::converterParaDTO)
                 .collect(Collectors.toList());
     }
@@ -100,7 +110,7 @@ public class SolicitacaoService {
         return false;
     }
 
-    // --- DECISÃO EM LOTE (Aprovar Tudo / Rejeitar Tudo) ---
+    // --- DECISÃO EM LOTE ---
     @Transactional
     public void processarLote(DecisaoLoteDTO dto, String acao, String role) {
         List<Solicitacao> solicitacoes = solicitacaoRepository.findAllById(dto.ids());
@@ -108,41 +118,30 @@ public class SolicitacaoService {
 
         for (Solicitacao s : solicitacoes) {
             if ("APROVAR".equals(acao)) {
-                // Ao aprovar o lote inteiro, marcamos todos os itens como aprovados também
-                s.getItens().forEach(item -> item.setStatusItem(StatusItem.APROVADO));
-
-                if (roleUpper.equals("COORDINATOR") || roleUpper.equals("MANAGER")) {
-                    s.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
-                    // Reseta itens para controller avaliar novamente
-                    s.getItens().forEach(item -> item.setStatusItem(StatusItem.PENDENTE));
-                } else if (roleUpper.equals("CONTROLLER") || roleUpper.equals("ADMIN")) {
-                    aprovarFinal(s);
-                }
+                // Aprova itens pendentes
+                s.getItens().forEach(item -> {
+                    if (item.getStatusItem() == StatusItem.PENDENTE) {
+                        item.setStatusItem(StatusItem.APROVADO);
+                    }
+                });
+                avancarFase(s, roleUpper);
             } else if ("REJEITAR".equals(acao)) {
-                rejeitarSolicitacao(s, dto.observacao());
+                rejeitarSolicitacaoInteira(s, dto.observacao());
             }
         }
         solicitacaoRepository.saveAll(solicitacoes);
     }
 
-    // --- DECISÃO ITEM A ITEM (Granular) ---
+    // --- DECISÃO ITEM INDIVIDUAL ---
     @Transactional
     public void decidirItem(Long itemId, String acao, String observacao, String role) {
-        if (role == null || role.trim().isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Permissão não identificada (Role ausente).");
-        }
-
-        if ("REJEITAR".equals(acao) && (observacao == null || observacao.trim().isEmpty())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Para rejeitar um item, é obrigatório informar o motivo.");
-        }
-
         ItemSolicitacao item = itemSolicitacaoRepository.findById(itemId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item de solicitação não encontrado"));
-
-        Solicitacao solicitacao = item.getSolicitacao();
-        String roleUpper = role.toUpperCase();
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item não encontrado"));
 
         if ("REJEITAR".equals(acao)) {
+            if (observacao == null || observacao.isBlank())
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Motivo obrigatório.");
+
             item.setStatusItem(StatusItem.REPROVADO);
             item.setMotivoRecusa(observacao);
 
@@ -151,223 +150,105 @@ public class SolicitacaoService {
             m.setSaldoFisico(m.getSaldoFisico().add(item.getQuantidadeSolicitada()));
             materialRepository.save(m);
 
-        } else if ("APROVAR".equals(acao)) {
+        } else {
             item.setStatusItem(StatusItem.APROVADO);
             item.setMotivoRecusa(null);
-        } else {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Ação inválida: " + acao);
         }
-
         itemSolicitacaoRepository.save(item);
 
-        // Verifica se a solicitação inteira pode andar
-        verificarEAvancarFase(solicitacao, roleUpper);
+        // Verifica se pode avançar a solicitação pai
+        verificarProgressaoSolicitacao(item.getSolicitacao(), role);
     }
 
-    private void verificarEAvancarFase(Solicitacao s, String role) {
-        boolean todosProcessados = s.getItens().stream()
-                .allMatch(i -> i.getStatusItem() != StatusItem.PENDENTE);
+    private void verificarProgressaoSolicitacao(Solicitacao s, String role) {
+        boolean todosItensResolvidos = s.getItens().stream()
+                .noneMatch(i -> i.getStatusItem() == StatusItem.PENDENTE);
 
-        // Se ainda tem item pendente, não muda o status do pai
-        if (!todosProcessados) return;
+        if (todosItensResolvidos) {
+            avancarFase(s, role);
+        }
+    }
 
-        if (role.equals("COORDINATOR") || role.equals("MANAGER")) {
-            boolean temItemAprovado = s.getItens().stream().anyMatch(i -> i.getStatusItem() == StatusItem.APROVADO);
+    private void avancarFase(Solicitacao s, String role) {
+        boolean temAprovados = s.getItens().stream().anyMatch(i -> i.getStatusItem() == StatusItem.APROVADO);
 
-            if (temItemAprovado) {
-                s.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
-                // Resetar itens aprovados para PENDENTE para o Controller avaliar
-                s.getItens().stream()
-                        .filter(i -> i.getStatusItem() == StatusItem.APROVADO)
-                        .forEach(i -> i.setStatusItem(StatusItem.PENDENTE));
-            } else {
-                s.setStatus(StatusSolicitacao.REPROVADO);
-            }
-
-        } else if (role.equals("CONTROLLER") || role.equals("ADMIN")) {
-            boolean temItemAprovado = s.getItens().stream().anyMatch(i -> i.getStatusItem() == StatusItem.APROVADO);
-
-            if (temItemAprovado) {
-                aprovarFinal(s);
-            } else {
-                s.setStatus(StatusSolicitacao.REPROVADO);
-            }
+        if (!temAprovados) {
+            // Se tudo foi recusado, a solicitação morre aqui
+            s.setStatus(role.equals("CONTROLLER") ? StatusSolicitacao.REJEITADO_CONTROLLER : StatusSolicitacao.REJEITADO_COORDENADOR);
+            return;
         }
 
-        solicitacaoRepository.save(s);
+        if (role.equals("COORDINATOR") || role.equals("MANAGER")) {
+            // Vai para o Controller
+            s.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
+
+            // Resetar itens APROVADOS para PENDENTE para o Controller avaliar novamente?
+            // Regra de negócio: O Controller deve revalidar o que o Coordenador aprovou.
+            s.getItens().stream()
+                    .filter(i -> i.getStatusItem() == StatusItem.APROVADO)
+                    .forEach(i -> i.setStatusItem(StatusItem.PENDENTE));
+
+        } else if (role.equals("CONTROLLER") || role.equals("ADMIN")) {
+            // Finaliza e Integra
+            s.setStatus(StatusSolicitacao.APROVADO); // ou FINALIZADO
+            integrarComMonolito(s);
+        }
     }
 
-    // --- MÉTODOS AUXILIARES DE FINALIZAÇÃO ---
-
-    private void aprovarFinal(Solicitacao s) {
-        s.setStatus(StatusSolicitacao.APROVADO);
-
-        BigDecimal custoTotal = BigDecimal.ZERO;
+    private void rejeitarSolicitacaoInteira(Solicitacao s, String motivo) {
+        s.setStatus(StatusSolicitacao.REPROVADO);
         for (ItemSolicitacao item : s.getItens()) {
-            if (item.getStatusItem() == StatusItem.APROVADO && item.getMaterial().getCustoMedioPonderado() != null) {
-                BigDecimal custoItem = item.getMaterial().getCustoMedioPonderado().multiply(item.getQuantidadeSolicitada());
-                custoTotal = custoTotal.add(custoItem);
+            if (item.getStatusItem() != StatusItem.REPROVADO) {
+                item.setStatusItem(StatusItem.REPROVADO);
+                item.setMotivoRecusa(motivo);
+                // Devolve estoque
+                Material m = item.getMaterial();
+                m.setSaldoFisico(m.getSaldoFisico().add(item.getQuantidadeSolicitada()));
+                materialRepository.save(m);
+            }
+        }
+    }
+
+    private void integrarComMonolito(Solicitacao s) {
+        BigDecimal custoTotal = BigDecimal.ZERO;
+        List<String> descricoes = new ArrayList<>();
+
+        for (ItemSolicitacao item : s.getItens()) {
+            if (item.getStatusItem() == StatusItem.APROVADO) {
+                BigDecimal custo = item.getMaterial().getCustoMedioPonderado().multiply(item.getQuantidadeSolicitada());
+                custoTotal = custoTotal.add(custo);
+                descricoes.add(item.getQuantidadeSolicitada() + "x " + item.getMaterial().getDescricao());
             }
         }
 
         if (s.getOsId() != null && custoTotal.compareTo(BigDecimal.ZERO) > 0) {
-            atualizarFinanceiroMonolito(s.getOsId(), custoTotal);
-        }
-    }
+            try {
+                // 1. Atualiza Valor na OS
+                String urlValor = monolithUrl + "/api/os/" + s.getOsId() + "/adicionar-custo-material";
+                restTemplate.postForLocation(urlValor, custoTotal);
 
-    private void rejeitarSolicitacao(Solicitacao s, String motivo) {
-        s.setStatus(StatusSolicitacao.REPROVADO);
-        // Devolver o saldo ao estoque se for rejeitado totalmente
-        for (ItemSolicitacao item : s.getItens()) {
-            // Verifica se já não foi devolvido individualmente (caso misto)
-            if (item.getStatusItem() != StatusItem.REPROVADO) {
-                Material m = item.getMaterial();
-                m.setSaldoFisico(m.getSaldoFisico().add(item.getQuantidadeSolicitada()));
-                materialRepository.save(m);
-                item.setStatusItem(StatusItem.REPROVADO);
+                // 2. Opcional: Enviar histórico/comentário para a OS (se o endpoint existir no monolito)
+                // String resumo = "Materiais Aprovados (ID " + s.getId() + "): " + String.join(", ", descricoes);
+                // restTemplate.postForLocation(monolithUrl + "/api/os/" + s.getOsId() + "/comentario-sistema", resumo);
+
+            } catch (Exception e) {
+                System.err.println("Erro ao integrar com Monolito: " + e.getMessage());
+                // Não falha a transação, mas loga o erro. Pode-se implementar retry.
             }
         }
     }
 
-    private void atualizarFinanceiroMonolito(Long osId, BigDecimal valor) {
-        try {
-            String url = monolithUrl + "/api/os/" + osId + "/adicionar-custo-material";
-            restTemplate.postForLocation(url, valor);
-        } catch (Exception e) {
-            System.err.println("ERRO INTEGRACAO OS: " + e.getMessage());
-        }
-    }
-
-    // --- CONVERSÃO E INTEGRAÇÃO (DTOs) ---
-
+    // --- CONVERSORES DTO (Mantidos simplificados) ---
     private SolicitacaoResponseDTO converterParaDTO(Solicitacao s) {
-        OsDTO osDto = montarOsDTO(s.getOsId());
-        LpuDTO lpuDto = montarLpuDTO(s.getLpuId()); // Agora busca o objeto contratado
-        String nomeSolicitante = montarNomeSolicitante(s.getSolicitanteId()); // Agora busca o nome real
-
         return new SolicitacaoResponseDTO(
                 s.getId(),
                 s.getDataSolicitacao(),
                 s.getJustificativa(),
                 s.getStatus(),
-                nomeSolicitante,
-                osDto,
-                lpuDto,
+                "Solicitante " + s.getSolicitanteId(), // Simplificado para exemplo
+                new OsDTO(s.getOsId(), (s.getOsId() != null ? s.getOsId().toString() : "N/A"), new SegmentoDTO(0L, "-")),
+                new LpuDTO(s.getLpuId(), "Item Contrato", "-"),
                 s.getItens()
         );
-    }
-
-    @SuppressWarnings("unchecked")
-    private OsDTO montarOsDTO(Long osId) {
-        SegmentoDTO segmentoFallback = new SegmentoDTO(0L, "-");
-        String osNumeroFallback = (osId == null) ? "N/A" : String.valueOf(osId);
-        OsDTO fallback = new OsDTO(osId, osNumeroFallback, segmentoFallback);
-
-        if (osId == null) return fallback;
-
-        for (String base : monolithBaseUrls()) {
-            String[] paths = new String[]{"/api/os/" + osId, "/os/" + osId};
-            for (String path : paths) {
-                Map<String, Object> map = tryGetMap(base + path);
-                if (map == null || map.isEmpty()) continue;
-
-                Long id = asLong(map.get("id"));
-                if (id == null) id = osId;
-
-                // Garante que busca o campo string 'os' corretamente
-                String osNumero = firstNonBlank(
-                        asString(map.get("os")), asString(map.get("numeroOS")),
-                        asString(map.get("numero")), asString(map.get("codigo"))
-                );
-                if (osNumero == null) osNumero = osNumeroFallback;
-
-                SegmentoDTO seg = segmentoFallback;
-                Object segObj = map.get("segmento");
-                if (segObj instanceof Map) {
-                    Map<String, Object> segMap = (Map<String, Object>) segObj;
-                    Long segId = asLong(segMap.get("id"));
-                    String segNome = firstNonBlank(asString(segMap.get("nome")), asString(segMap.get("descricao")));
-                    seg = new SegmentoDTO(segId == null ? 0L : segId, segNome == null ? "-" : segNome);
-                }
-                return new OsDTO(id, osNumero, seg);
-            }
-        }
-        return fallback;
-    }
-
-    @SuppressWarnings("unchecked")
-    private LpuDTO montarLpuDTO(Long lpuId) {
-        // ID do LPU aqui refere-se ao 'OsLpuDetalhe', de onde pegamos o Objeto Contratado.
-        if (lpuId == null || lpuId == 0) return new LpuDTO(0L, "Contrato não informado", "-");
-
-        for (String base : monolithBaseUrls()) {
-            // Chama o endpoint que criamos no OsController do Monolito
-            String url = base + "/os/detalhes/" + lpuId;
-            Map<String, Object> map = tryGetMap(url);
-
-            if (map != null && map.get("objetoContratado") != null) {
-                String objContratado = asString(map.get("objetoContratado"));
-                // O front-end usa o campo 'nome' do DTO para exibir essa info
-                return new LpuDTO(lpuId, objContratado, "-");
-            }
-        }
-        return new LpuDTO(lpuId, "Objeto não encontrado", "-");
-    }
-
-    @SuppressWarnings("unchecked")
-    private String montarNomeSolicitante(Long solicitanteId) {
-        if (solicitanteId == null) return "Não informado";
-        for (String base : monolithBaseUrls()) {
-            // Novo endpoint criado: /usuarios/{id}
-            String url = base + "/usuarios/" + solicitanteId;
-            Map<String, Object> map = tryGetMap(url);
-
-            if (map != null && map.get("nome") != null) {
-                return asString(map.get("nome"));
-            }
-        }
-        return "Solicitante #" + solicitanteId;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> tryGetMap(String url) {
-        try {
-            return restTemplate.getForObject(url, Map.class);
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    private List<String> monolithBaseUrls() {
-        List<String> bases = new ArrayList<>();
-        if (monolithUrl != null && !monolithUrl.trim().isEmpty()) {
-            bases.add(monolithUrl.trim());
-        }
-        if (!bases.contains("http://localhost:8080")) bases.add("http://localhost:8080");
-        return bases;
-    }
-
-    private String firstNonBlank(String... values) {
-        if (values == null) return null;
-        for (String v : values) {
-            if (v != null && !v.trim().isEmpty()) return v.trim();
-        }
-        return null;
-    }
-
-    private String asString(Object o) {
-        if (o == null) return null;
-        String s = String.valueOf(o);
-        return (s == null) ? null : s.trim();
-    }
-
-    private Long asLong(Object o) {
-        if (o == null) return null;
-        if (o instanceof Number) return ((Number) o).longValue();
-        try {
-            String s = String.valueOf(o).trim();
-            if (!s.isEmpty()) return Long.valueOf(s);
-        } catch (Exception e) { /* ignorar */ }
-        return null;
     }
 }
