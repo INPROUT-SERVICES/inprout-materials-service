@@ -72,9 +72,6 @@ public class SolicitacaoService {
     public List<SolicitacaoResponseDTO> listarPendentes(String userRole, Long userId) {
         if (userRole == null) return new ArrayList<>();
 
-        // --- LOG DE DEBUG ---
-        // System.out.println("Listando pendentes para: " + userRole);
-
         List<Solicitacao> todas = solicitacaoRepository.findAll();
 
         if ("CONTROLLER".equalsIgnoreCase(userRole) || "ADMIN".equalsIgnoreCase(userRole)) {
@@ -118,22 +115,39 @@ public class SolicitacaoService {
         List<ItemSolicitacao> itens = itemSolicitacaoRepository.findAllById(dto.ids());
         Set<Solicitacao> solicitacoesAfetadas = new HashSet<>();
 
+        // Mapa para acumular valores por OS (para enviar de uma vez por OS e não por item)
+        Map<Long, BigDecimal> valoresParaIntegrar = new HashMap<>();
+
         for (ItemSolicitacao item : itens) {
             if ("APROVAR".equalsIgnoreCase(acao)) {
                 if (item.getStatusItem() == StatusItem.PENDENTE) {
                     item.setStatusItem(StatusItem.APROVADO);
                     solicitacoesAfetadas.add(item.getSolicitacao());
+
+                    // --- MUDANÇA: SOMA IMEDIATA SE FOR CONTROLLER/ADMIN ---
+                    if (isFinanceiro(role)) {
+                        BigDecimal valorItem = calcularCustoItem(item);
+                        Long osId = item.getSolicitacao().getOsId();
+                        if (osId != null) {
+                            valoresParaIntegrar.merge(osId, valorItem, BigDecimal::add);
+                        }
+                    }
                 }
             } else if ("REJEITAR".equalsIgnoreCase(acao)) {
-                item.setStatusItem(StatusItem.REPROVADO);
-                item.setMotivoRecusa(dto.observacao());
-                Material m = item.getMaterial();
-                m.setSaldoFisico(m.getSaldoFisico().add(item.getQuantidadeSolicitada()));
-                materialRepository.save(m);
-                solicitacoesAfetadas.add(item.getSolicitacao());
+                if (item.getStatusItem() == StatusItem.PENDENTE) {
+                    item.setStatusItem(StatusItem.REPROVADO);
+                    item.setMotivoRecusa(dto.observacao());
+                    Material m = item.getMaterial();
+                    m.setSaldoFisico(m.getSaldoFisico().add(item.getQuantidadeSolicitada()));
+                    materialRepository.save(m);
+                    solicitacoesAfetadas.add(item.getSolicitacao());
+                }
             }
         }
         itemSolicitacaoRepository.saveAll(itens);
+
+        // Envia os valores acumulados para o Monólito
+        valoresParaIntegrar.forEach(this::atualizarFinanceiroMonolito);
 
         for (Solicitacao s : solicitacoesAfetadas) {
             avancarFase(s, role);
@@ -146,6 +160,11 @@ public class SolicitacaoService {
 
         ItemSolicitacao item = itemSolicitacaoRepository.findById(itemId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
 
+        // Evitar processar item já finalizado
+        if (item.getStatusItem() != StatusItem.PENDENTE) {
+            return;
+        }
+
         if ("REJEITAR".equalsIgnoreCase(acao)) {
             item.setStatusItem(StatusItem.REPROVADO);
             item.setMotivoRecusa(observacao);
@@ -154,6 +173,12 @@ public class SolicitacaoService {
             materialRepository.save(m);
         } else {
             item.setStatusItem(StatusItem.APROVADO);
+
+            // --- MUDANÇA: ENVIO IMEDIATO SE FOR CONTROLLER/ADMIN ---
+            if (isFinanceiro(role) && item.getSolicitacao().getOsId() != null) {
+                BigDecimal valor = calcularCustoItem(item);
+                atualizarFinanceiroMonolito(item.getSolicitacao().getOsId(), valor);
+            }
         }
         itemSolicitacaoRepository.save(item);
         avancarFase(item.getSolicitacao(), role);
@@ -165,7 +190,8 @@ public class SolicitacaoService {
         // 1. Verifica se tem algum pendente
         boolean existePendente = s.getItens().stream().anyMatch(i -> i.getStatusItem() == StatusItem.PENDENTE);
         if (existePendente) {
-            System.out.println(">>> AINDA HÁ ITENS PENDENTES. NÃO AVANÇA.");
+            // Se tem pendente, apenas salvamos o estado atual dos itens, mas não finalizamos a Solicitação global
+            System.out.println(">>> AINDA HÁ ITENS PENDENTES. STATUS DA SOLICITAÇÃO MANTIDO.");
             solicitacaoRepository.save(s);
             return;
         }
@@ -178,58 +204,50 @@ public class SolicitacaoService {
             return;
         }
 
-        // 3. Logica de papéis (AGORA USANDO IGNORE CASE)
+        // 3. Lógica de papéis
         if ("COORDINATOR".equalsIgnoreCase(role)) {
             System.out.println(">>> COORDENADOR APROVOU. AVANÇANDO PARA CONTROLLER.");
             s.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
+            // Reseta os itens aprovados pelo coordenador para Pendente, para o Controller aprovar financeiramente
             s.getItens().stream()
                     .filter(i -> i.getStatusItem() == StatusItem.APROVADO)
                     .forEach(i -> i.setStatusItem(StatusItem.PENDENTE));
 
-        } else if ("CONTROLLER".equalsIgnoreCase(role) || "ADMIN".equalsIgnoreCase(role)) {
-            System.out.println(">>> CONTROLLER APROVOU FINAL. CHAMANDO INTEGRAÇÃO...");
-            aprovarFinal(s);
-        } else {
-            System.out.println(">>> ROLE NÃO RECONHECIDA PARA AVANÇO: " + role);
+        } else if (isFinanceiro(role)) {
+            // --- MUDANÇA: APENAS FINALIZA O STATUS ---
+            // O valor financeiro já foi enviado item a item nos métodos 'decidirItem' e 'processarLote'
+            System.out.println(">>> CONTROLLER/ADMIN FINALIZOU TODOS OS ITENS. STATUS -> APROVADO.");
+            s.setStatus(StatusSolicitacao.APROVADO);
         }
 
         solicitacaoRepository.save(s);
     }
 
-    private void aprovarFinal(Solicitacao s) {
-        s.setStatus(StatusSolicitacao.APROVADO);
-        BigDecimal custoTotal = BigDecimal.ZERO;
-
-        for (ItemSolicitacao item : s.getItens()) {
-            if (item.getStatusItem() == StatusItem.APROVADO) {
-                BigDecimal preco = item.getMaterial().getCustoMedioPonderado() != null ? item.getMaterial().getCustoMedioPonderado() : BigDecimal.ZERO;
-                BigDecimal qtd = item.getQuantidadeSolicitada() != null ? item.getQuantidadeSolicitada() : BigDecimal.ZERO;
-                custoTotal = custoTotal.add(preco.multiply(qtd));
-            }
-        }
-
-        System.out.println(">>> CUSTO CALCULADO: R$ " + custoTotal);
-        if (s.getOsId() != null) {
-            atualizarFinanceiroMonolito(s.getOsId(), custoTotal);
-        }
-    }
-
+    // --- CORREÇÃO DA INTEGRAÇÃO HTTP ---
     private void atualizarFinanceiroMonolito(Long osId, BigDecimal valor) {
+        if (valor == null || valor.compareTo(BigDecimal.ZERO) == 0) return;
+
         List<String> urlsToTry = new ArrayList<>();
+        // Tenta nome do serviço Docker
         urlsToTry.add("http://inprout-monolito-homolog:8080/os/" + osId + "/adicionar-custo-material");
-        urlsToTry.add(monolithUrl + "/os/" + osId + "/adicionar-custo-material");
+        // Tenta URL configurada (backup para local)
+        if (monolithUrl != null && !monolithUrl.contains("inprout-monolito-homolog")) {
+            urlsToTry.add(monolithUrl + "/os/" + osId + "/adicionar-custo-material");
+        }
 
         boolean sucesso = false;
 
         for (String url : urlsToTry) {
             if (sucesso) break;
             try {
-                System.out.println(">>> TENTANDO POST EM: " + url);
+                System.out.println(">>> TENTANDO INTEGRAR " + valor + " EM: " + url);
                 org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
                 headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
                 org.springframework.http.HttpEntity<BigDecimal> request = new org.springframework.http.HttpEntity<>(valor, headers);
 
-                restTemplate.postForLocation(url, request);
+                // CORREÇÃO: Usar postForEntity para garantir que aceitamos 200 OK sem body de retorno
+                restTemplate.postForEntity(url, request, Void.class);
+
                 System.out.println(">>> SUCESSO! VALOR INTEGRADO.");
                 sucesso = true;
             } catch (Exception e) {
@@ -238,7 +256,19 @@ public class SolicitacaoService {
         }
     }
 
-    // --- MÉTODOS DE DTO (Mantidos iguais) ---
+    // --- MÉTODOS AUXILIARES ---
+
+    private boolean isFinanceiro(String role) {
+        return "CONTROLLER".equalsIgnoreCase(role) || "ADMIN".equalsIgnoreCase(role);
+    }
+
+    private BigDecimal calcularCustoItem(ItemSolicitacao item) {
+        BigDecimal preco = item.getMaterial().getCustoMedioPonderado() != null ? item.getMaterial().getCustoMedioPonderado() : BigDecimal.ZERO;
+        BigDecimal qtd = item.getQuantidadeSolicitada() != null ? item.getQuantidadeSolicitada() : BigDecimal.ZERO;
+        return preco.multiply(qtd);
+    }
+
+    // --- MÉTODOS DE DTO (Mantidos) ---
     private Long buscarSegmentoDoUsuario(Long userId) {
         if (userId == null) return null;
         try {
