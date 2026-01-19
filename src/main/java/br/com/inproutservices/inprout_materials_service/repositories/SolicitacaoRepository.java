@@ -3,6 +3,7 @@ package br.com.inproutservices.inprout_materials_service.repositories;
 import br.com.inproutservices.inprout_materials_service.entities.Solicitacao;
 import br.com.inproutservices.inprout_materials_service.enums.StatusSolicitacao;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -15,4 +16,7 @@ public interface SolicitacaoRepository extends JpaRepository<Solicitacao, Long> 
 
     // Busca histórico (tudo que não está pendente, por exemplo) - Opcional para o futuro
     List<Solicitacao> findBySolicitanteId(Long solicitanteId);
+
+    @Query("SELECT DISTINCT s FROM Solicitacao s JOIN FETCH s.itens i WHERE i.statusItem = 'PENDENTE'")
+    List<Solicitacao> findAllPendentesAdmin();
 }

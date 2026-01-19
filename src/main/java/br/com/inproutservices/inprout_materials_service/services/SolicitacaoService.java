@@ -72,25 +72,32 @@ public class SolicitacaoService {
     public List<SolicitacaoResponseDTO> listarPendentes(String userRole, Long userId) {
         if (userRole == null) return new ArrayList<>();
 
-        List<Solicitacao> todas = solicitacaoRepository.findAll();
+        List<Solicitacao> solicitacoes = new ArrayList<>();
 
-        if ("CONTROLLER".equalsIgnoreCase(userRole) || "ADMIN".equalsIgnoreCase(userRole)) {
-            return todas.stream()
-                    .filter(s -> s.getStatus() == StatusSolicitacao.PENDENTE_CONTROLLER)
-                    .map(this::converterParaDTO)
-                    .collect(Collectors.toList());
+        // 1. REGRA DE ADMIN (Vê tudo que tem pendência real nos itens)
+        if ("ADMIN".equalsIgnoreCase(userRole)) {
+            solicitacoes = solicitacaoRepository.findAllPendentesAdmin();
         }
+        // 2. REGRA DE CONTROLLER (Vê o que já passou pelo coordenador)
+        else if ("CONTROLLER".equalsIgnoreCase(userRole)) {
+            solicitacoes = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
+        }
+        // 3. REGRA DE COORDENADOR (Vê fase inicial + Filtro de Segmento)
+        else if ("COORDINATOR".equalsIgnoreCase(userRole)) {
+            List<Solicitacao> doCoordenador = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_COORDENADOR);
 
-        if ("COORDINATOR".equalsIgnoreCase(userRole)) {
+            // Filtra por segmento
             Long segmentoUsuario = buscarSegmentoDoUsuario(userId);
-            return todas.stream()
-                    .filter(s -> s.getStatus() == StatusSolicitacao.PENDENTE_COORDENADOR)
+            solicitacoes = doCoordenador.stream()
                     .filter(s -> pertenceAoSegmento(s, segmentoUsuario))
-                    .map(this::converterParaDTO)
                     .collect(Collectors.toList());
         }
-        return new ArrayList<>();
-    }
+
+        // Converte a lista final para DTO
+        return solicitacoes.stream()
+                .map(this::converterParaDTO)
+                .collect(Collectors.toList());
+    }gii
 
     public List<SolicitacaoResponseDTO> listarHistorico(String userRole, Long userId) {
         return solicitacaoRepository.findAll().stream()
