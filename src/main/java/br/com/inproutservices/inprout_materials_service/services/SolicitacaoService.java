@@ -97,7 +97,7 @@ public class SolicitacaoService {
         return solicitacoes.stream()
                 .map(this::converterParaDTO)
                 .collect(Collectors.toList());
-    }gii
+    }
 
     public List<SolicitacaoResponseDTO> listarHistorico(String userRole, Long userId) {
         return solicitacaoRepository.findAll().stream()
