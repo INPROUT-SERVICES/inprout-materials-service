@@ -18,6 +18,7 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class MaterialService {
@@ -231,5 +232,12 @@ public class MaterialService {
             try { return new BigDecimal(value.replace(",", ".")); } catch (Exception e) { return null; }
         }
         return null;
+    }
+
+    @Transactional(readOnly = true)
+    public List<MaterialResumoDTO> listarTodosResumido() {
+        return materialRepository.findAll().stream()
+                .map(MaterialResumoDTO::new)
+                .collect(Collectors.toList());
     }
 }

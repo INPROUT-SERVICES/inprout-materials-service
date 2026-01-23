@@ -15,8 +15,7 @@ import java.util.List;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/materiais")
-// A CORREÇÃO ESTÁ NA LINHA ABAIXO: trocamos origins por originPatterns
+@RequestMapping("/api/materiais")
 @CrossOrigin(originPatterns = "*")
 public class MaterialController {
 
@@ -27,8 +26,8 @@ public class MaterialController {
     }
 
     @GetMapping
-    public ResponseEntity<List<Material>> listarTodosMateriais() {
-        return ResponseEntity.ok(materialService.listarTodos());
+    public ResponseEntity<List<MaterialResumoDTO>> listarTodosMateriais() {
+        return ResponseEntity.ok(materialService.listarTodosResumido());
     }
 
     @GetMapping("/{id}")

@@ -329,8 +329,36 @@ public class SolicitacaoService {
 
     private String montarNomeSolicitante(Long id) {
         if (id == null) return "Não informado";
-        Map<String, Object> map = tryGetMap(monolithUrl + "/usuarios/" + id);
-        return map != null ? asString(map.get("nome")) : "Solicitante #" + id;
+
+        // LISTA DE TENTATIVAS:
+        // 1. URL configurada no application.yaml
+        // 2. Nome do serviço no Docker Compose (rede interna)
+        // 3. Fallback para localhost (caso rode localmente)
+        String[] baseUrls = {
+                monolithUrl,
+                "http://inprout-monolito:8080", // Nome do container no docker-compose.yml
+                "http://app-backend:8080"       // Outro nome comum de serviço
+        };
+
+        for (String base : baseUrls) {
+            if (base == null || base.isBlank()) continue;
+
+            // Remove barra final se existir para evitar duplicidade (//)
+            String urlLimpa = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+
+            try {
+                // Tenta buscar o nome
+                Map<String, Object> map = tryGetMap(urlLimpa + "/usuarios/" + id);
+                if (map != null && map.get("nome") != null) {
+                    return asString(map.get("nome"));
+                }
+            } catch (Exception e) {
+                // Apenas loga e continua para a próxima URL
+                System.out.println(">>> Falha ao buscar nome em " + base + ": " + e.getMessage());
+            }
+        }
+
+        return "Solicitante #" + id; // Retorno de segurança se tudo falhar
     }
 
     private Map<String, Object> tryGetMap(String url) {
