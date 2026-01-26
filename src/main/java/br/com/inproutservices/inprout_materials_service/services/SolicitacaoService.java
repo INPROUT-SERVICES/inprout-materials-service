@@ -17,6 +17,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity; // <--- IMPORT ADICIONADO
+import org.springframework.http.HttpMethod;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -176,11 +183,33 @@ public class SolicitacaoService {
                 String urlBaseLimpa = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
                 String fullUrl = urlBaseLimpa + pathClean;
 
-                Map<String, Object> map = restTemplate.getForObject(fullUrl, Map.class);
-                if (map != null) return map;
+                ResponseEntity<Map> response = restTemplate.exchange(
+                        fullUrl,
+                        HttpMethod.GET,
+                        createHttpEntity(null),
+                        Map.class
+                );
+
+                if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                    return (Map<String, Object>) response.getBody();
+                }
             } catch (Exception ignored) { }
         }
         return null;
+    }
+
+    private HttpEntity<Object> createHttpEntity(Object body) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes != null) {
+            jakarta.servlet.http.HttpServletRequest request = attributes.getRequest();
+            String authHeader = request.getHeader("Authorization");
+            if (authHeader != null) {
+                headers.set("Authorization", authHeader);
+            }
+        }
+        return new HttpEntity<>(body, headers);
     }
 
     private Long buscarSegmentoDoUsuario(Long userId) {
