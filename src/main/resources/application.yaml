@@ -6,7 +6,7 @@ spring:
     driver-class-name: org.postgresql.Driver
     # URL do Banco de Materiais (separado do monólito)
     # Se rodar local sem docker, usa localhost. Se rodar via docker-compose, o host deve ser 'db' ou o IP do seu banco.
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/inp_materials}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://3.128.248.3:5432/inpdatabase_v1}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
     password: ${SPRING_DATASOURCE_PASSWORD:inpservices123}
 

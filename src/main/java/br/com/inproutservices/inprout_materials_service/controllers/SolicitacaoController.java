@@ -16,7 +16,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/materiais/solicitacoes")
-@CrossOrigin(origins = "*")
+@CrossOrigin(originPatterns = "*")
 public class SolicitacaoController {
 
     private final SolicitacaoService service;
