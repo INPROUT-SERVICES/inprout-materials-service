@@ -41,6 +41,9 @@ public class Solicitacao {
     @Column(name = "aprovador_id")
     private Long aprovadorId;
 
+    @Column(name = "segmento_id")
+    private Long segmentoId;
+
     @OneToMany(mappedBy = "solicitacao", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
     private List<ItemSolicitacao> itens = new ArrayList<>();
 
@@ -69,4 +72,12 @@ public class Solicitacao {
     public void setAprovadorId(Long aprovadorId) { this.aprovadorId = aprovadorId; }
     public List<ItemSolicitacao> getItens() { return itens; }
     public void setItens(List<ItemSolicitacao> itens) { this.itens = itens; }
+
+    public Long getSegmentoId() {
+        return segmentoId;
+    }
+
+    public void setSegmentoId(Long segmentoId) {
+        this.segmentoId = segmentoId;
+    }
 }

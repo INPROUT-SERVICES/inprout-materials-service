@@ -59,6 +59,8 @@ public class SolicitacaoService {
     public List<Solicitacao> criarSolicitacaoEmLote(CriarSolicitacaoLoteDTO dto) {
         Solicitacao solicitacao = new Solicitacao();
         solicitacao.setOsId(dto.osId());
+        Long segmentoId = buscarSegmentoDaOs(dto.osId());
+        solicitacao.setSegmentoId(segmentoId);
         solicitacao.setLpuId(dto.lpuItemId() != null ? dto.lpuItemId() : 0L);
         solicitacao.setSolicitanteId(dto.solicitanteId());
         solicitacao.setJustificativa(dto.observacoes());
@@ -93,10 +95,21 @@ public class SolicitacaoService {
         else if (userRole.toUpperCase().contains("CONTROLLER")) {
             solicitacoes = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
         }
+        // --- LÓGICA DO COORDENADOR CORRIGIDA ---
         else if (userRole.toUpperCase().contains("COORDINATOR") || userRole.toUpperCase().contains("COORDENADOR")) {
-            List<Solicitacao> doCoordenador = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_COORDENADOR);
-            // Aplica filtro de segmento
-            solicitacoes = filtrarPorSegmentoDoUsuario(doCoordenador, userId);
+            // 1. Descobre qual o segmento do Coordenador logado
+            Long segmentoDoUsuario = buscarSegmentoDoUsuario(userId);
+
+            if (segmentoDoUsuario != null) {
+                // 2. Busca no banco filtrando por Status E Segmento (Rápido e Seguro)
+                solicitacoes = solicitacaoRepository.findByStatusAndSegmentoIdIn(
+                        StatusSolicitacao.PENDENTE_COORDENADOR,
+                        List.of(segmentoDoUsuario) // Passa como lista
+                );
+            } else {
+                // Se o coordenador não tem segmento, não vê nada
+                solicitacoes = new ArrayList<>();
+            }
         }
 
         return solicitacoes.stream()
@@ -106,40 +119,48 @@ public class SolicitacaoService {
 
     // --- MÉTODO DE HISTÓRICO ATUALIZADO COM FILTRO ---
     public List<SolicitacaoResponseDTO> listarHistorico(LocalDate inicio, LocalDate fim, String userRole, Long userId) {
-        // Busca tudo do banco (idealmente seria paginado ou filtrado por data no repository)
-        List<Solicitacao> todas = solicitacaoRepository.findAll();
+        // 1. Ajuste de Datas (Padrão: Últimos 30 dias se nulo)
+        LocalDateTime dataInicio = (inicio != null) ? inicio.atStartOfDay() : LocalDate.now().minusDays(30).atStartOfDay();
 
-        // Filtro de Data (se fornecido)
-        if (inicio != null) {
-            todas = todas.stream().filter(s -> s.getDataSolicitacao().toLocalDate().isAfter(inicio.minusDays(1))).collect(Collectors.toList());
-        }
-        if (fim != null) {
-            todas = todas.stream().filter(s -> s.getDataSolicitacao().toLocalDate().isBefore(fim.plusDays(1))).collect(Collectors.toList());
+        // CORREÇÃO AQUI: Trocado LocalDateTime.now() por LocalDate.now()
+        LocalDateTime dataFim = (fim != null) ? fim.atTime(23, 59, 59) : LocalDate.now().atTime(23, 59, 59);
+
+        List<Solicitacao> filtradas = new ArrayList<>();
+
+        if (userRole == null) return new ArrayList<>();
+        String roleUpper = userRole.toUpperCase();
+
+        // CASO 1: ADMIN ou CONTROLLER (Vê tudo no período)
+        if (roleUpper.contains("ADMIN") || roleUpper.contains("CONTROLLER")) {
+            filtradas = solicitacaoRepository.findByDataSolicitacaoBetween(dataInicio, dataFim);
         }
 
-        // Filtro de Role
-        boolean ehAdminOuController = userRole != null && (userRole.toUpperCase().contains("ADMIN") || userRole.toUpperCase().contains("CONTROLLER"));
-        boolean ehGestorSegmentado = userRole != null && (userRole.toUpperCase().contains("COORDINATOR") || userRole.toUpperCase().contains("MANAGER"));
+        // CASO 2: COORDENADOR (Vê apenas do seu segmento)
+        else if (roleUpper.contains("COORDINATOR") || roleUpper.contains("COORDENADOR") || roleUpper.contains("MANAGER")) {
+            Long segmentoId = buscarSegmentoDoUsuario(userId);
 
-        List<Solicitacao> filtradas;
+            if (segmentoId != null) {
+                // Busca direta no banco filtrando por Data E Segmento
+                filtradas = solicitacaoRepository.findByDataSolicitacaoBetweenAndSegmentoIdIn(
+                        dataInicio, dataFim, List.of(segmentoId)
+                );
+            } else {
+                // Coordenador sem segmento não vê nada
+                return new ArrayList<>();
+            }
+        }
 
-        if (ehAdminOuController) {
-            filtradas = todas; // Vê tudo
-        }
-        else if (ehGestorSegmentado) {
-            // Vê tudo do seu segmento
-            filtradas = filtrarPorSegmentoDoUsuario(todas, userId);
-        }
+        // CASO 3: SOLICITANTE/OUTROS (Vê apenas as suas)
         else {
-            // Usuário comum vê apenas as suas
-            filtradas = todas.stream()
-                    .filter(s -> s.getSolicitanteId() != null && s.getSolicitanteId().equals(userId))
-                    .collect(Collectors.toList());
+            filtradas = solicitacaoRepository.findByDataSolicitacaoBetweenAndSolicitanteId(
+                    dataInicio, dataFim, userId
+            );
         }
 
+        // Ordenação e Conversão para DTO
         return filtradas.stream()
                 .sorted((a, b) -> b.getDataSolicitacao().compareTo(a.getDataSolicitacao()))
-                .limit(100) // Limite de segurança
+                .limit(300) // Limite de segurança para não travar o front
                 .map(this::converterParaDTO)
                 .collect(Collectors.toList());
     }
