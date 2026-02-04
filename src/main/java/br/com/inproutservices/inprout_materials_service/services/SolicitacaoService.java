@@ -403,16 +403,24 @@ public class SolicitacaoService {
     }
 
     private LpuDTO montarLpuDTO(Long lpuId) {
-        if (lpuId == null || lpuId == 0) return new LpuDTO(0L, "Não informado", "-", "-");
+        // Se não tiver ID, retorna com traços
+        if (lpuId == null || lpuId == 0) {
+            return new LpuDTO(0L, "Não informado", "-", "-");
+        }
 
         Map<String, Object> map = buscarNoMonolito("/os/detalhes/" + lpuId);
 
-        return new LpuDTO(
-                lpuId,
-                map != null ? asString(map.get("objetoContratado")) : "Não encontrado",
-                "-",
-                map != null ? asString(map.get("site")) : "-"
-        );
+        // Se o mapa for nulo (falha na busca), retorna padrão
+        if (map == null) {
+            return new LpuDTO(lpuId, "Não encontrado", "-", "-");
+        }
+
+        // Mapeia os campos vindos do Monólito
+        String codigo = asString(map.get("objetoContratado"));
+        String site = asString(map.get("site")); // <--- Lendo o site aqui
+
+        // Retorna o DTO com 4 argumentos
+        return new LpuDTO(lpuId, codigo, "-", site != null ? site : "-");
     }
 
     private String montarNomeSolicitante(Long id) {
