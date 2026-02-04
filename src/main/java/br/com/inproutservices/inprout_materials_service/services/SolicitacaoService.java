@@ -22,7 +22,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity; // <--- IMPORT ADICIONADO
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.HttpMethod;
 
 import java.math.BigDecimal;
@@ -39,7 +39,6 @@ public class SolicitacaoService {
     private final ItemSolicitacaoRepository itemSolicitacaoRepository;
     private final RestTemplate restTemplate;
 
-    // Cache local simples de segmento por OS para a requisição atual
     private final Map<Long, Long> cacheSegmentoOs = new HashMap<>();
 
     @Value("${app.monolith.url:http://inprout-monolito:8080}")
@@ -59,8 +58,16 @@ public class SolicitacaoService {
     public List<Solicitacao> criarSolicitacaoEmLote(CriarSolicitacaoLoteDTO dto) {
         Solicitacao solicitacao = new Solicitacao();
         solicitacao.setOsId(dto.osId());
-        Long segmentoId = buscarSegmentoDaOs(dto.osId());
+
+        Long segmentoId = null;
+        if (dto.lpuItemId() != null && dto.lpuItemId() > 0) {
+            segmentoId = buscarSegmentoDoItem(dto.lpuItemId());
+        }
+        if (segmentoId == null) {
+            segmentoId = buscarSegmentoDaOs(dto.osId());
+        }
         solicitacao.setSegmentoId(segmentoId);
+
         solicitacao.setLpuId(dto.lpuItemId() != null ? dto.lpuItemId() : 0L);
         solicitacao.setSolicitanteId(dto.solicitanteId());
         solicitacao.setJustificativa(dto.observacoes());
@@ -72,8 +79,6 @@ public class SolicitacaoService {
         for (CriarSolicitacaoLoteDTO.ItemLoteRequest itemDto : dto.itens()) {
             Material material = materialRepository.findById(itemDto.materialId())
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Material não encontrado"));
-
-            // Abater saldo físico
             material.setSaldoFisico(material.getSaldoFisico().subtract(itemDto.quantidade()));
             materialRepository.save(material);
 
@@ -85,105 +90,156 @@ public class SolicitacaoService {
     }
 
     public List<SolicitacaoResponseDTO> listarPendentes(String userRole, Long userId) {
-        if (userRole == null) return new ArrayList<>();
-
-        List<Solicitacao> solicitacoes = new ArrayList<>();
-
-        if (userRole.toUpperCase().contains("ADMIN")) {
-            solicitacoes = solicitacaoRepository.findAllPendentesAdmin();
-        }
-        else if (userRole.toUpperCase().contains("CONTROLLER")) {
-            solicitacoes = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
-        }
-        // --- LÓGICA DO COORDENADOR CORRIGIDA ---
-        else if (userRole.toUpperCase().contains("COORDINATOR") || userRole.toUpperCase().contains("COORDENADOR")) {
-            // 1. Descobre qual o segmento do Coordenador logado
-            Long segmentoDoUsuario = buscarSegmentoDoUsuario(userId);
-
-            if (segmentoDoUsuario != null) {
-                // 2. Busca no banco filtrando por Status E Segmento (Rápido e Seguro)
-                solicitacoes = solicitacaoRepository.findByStatusAndSegmentoIdIn(
-                        StatusSolicitacao.PENDENTE_COORDENADOR,
-                        List.of(segmentoDoUsuario) // Passa como lista
-                );
-            } else {
-                // Se o coordenador não tem segmento, não vê nada
-                solicitacoes = new ArrayList<>();
-            }
-        }
-
-        return solicitacoes.stream()
-                .map(this::converterParaDTO)
-                .collect(Collectors.toList());
-    }
-
-    // --- MÉTODO DE HISTÓRICO ATUALIZADO COM FILTRO ---
-    public List<SolicitacaoResponseDTO> listarHistorico(LocalDate inicio, LocalDate fim, String userRole, Long userId) {
-        // 1. Ajuste de Datas (Padrão: Últimos 30 dias se nulo)
-        LocalDateTime dataInicio = (inicio != null) ? inicio.atStartOfDay() : LocalDate.now().minusDays(30).atStartOfDay();
-
-        // CORREÇÃO AQUI: Trocado LocalDateTime.now() por LocalDate.now()
-        LocalDateTime dataFim = (fim != null) ? fim.atTime(23, 59, 59) : LocalDate.now().atTime(23, 59, 59);
-
-        List<Solicitacao> filtradas = new ArrayList<>();
+        System.out.println(">>> LISTAR PENDENTES (V2) | Role: " + userRole + " | ID: " + userId);
 
         if (userRole == null) return new ArrayList<>();
         String roleUpper = userRole.toUpperCase();
 
-        // CASO 1: ADMIN ou CONTROLLER (Vê tudo no período)
+        if (roleUpper.contains("ADMIN")) {
+            return solicitacaoRepository.findAllPendentesAdmin().stream()
+                    .map(this::converterParaDTO)
+                    .collect(Collectors.toList());
+        }
+        else if (roleUpper.contains("CONTROLLER")) {
+            return solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_CONTROLLER).stream()
+                    .map(this::converterParaDTO)
+                    .collect(Collectors.toList());
+        }
+        else if (roleUpper.contains("COORDINATOR") || roleUpper.contains("COORDENADOR") || roleUpper.contains("MANAGER")) {
+
+            List<Long> segmentosUsuario = buscarSegmentosDoUsuario(userId);
+            System.out.println(">>> Segmentos do Usuario (Processado): " + segmentosUsuario);
+
+            if (segmentosUsuario.isEmpty()) {
+                System.out.println(">>> ALERTA: Usuario sem segmentos. Retornando vazio.");
+                return new ArrayList<>();
+            }
+
+            List<Solicitacao> todasPendentes = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_COORDENADOR);
+
+            return todasPendentes.stream()
+                    .filter(s -> validarOuAtualizarSegmento(s, segmentosUsuario))
+                    .map(this::converterParaDTO)
+                    .collect(Collectors.toList());
+        }
+
+        return new ArrayList<>();
+    }
+
+    private boolean validarOuAtualizarSegmento(Solicitacao s, List<Long> segmentosUsuario) {
+        Long segmentoId = s.getSegmentoId();
+
+        if (segmentoId != null) {
+            return segmentosUsuario.contains(segmentoId);
+        }
+
+        System.out.println(">>> Solicitacao " + s.getId() + " com segmento NULL. Buscando...");
+
+        Long segmentoRecuperado = null;
+        if (s.getLpuId() != null && s.getLpuId() > 0) {
+            segmentoRecuperado = buscarSegmentoDoItem(s.getLpuId());
+        }
+        if (segmentoRecuperado == null) {
+            segmentoRecuperado = buscarSegmentoDaOs(s.getOsId());
+        }
+
+        if (segmentoRecuperado != null) {
+            System.out.println(">>> Segmento recuperado: " + segmentoRecuperado + ". Atualizando banco...");
+            s.setSegmentoId(segmentoRecuperado);
+            solicitacaoRepository.save(s);
+
+            return segmentosUsuario.contains(segmentoRecuperado);
+        }
+
+        return false;
+    }
+
+    public List<SolicitacaoResponseDTO> listarHistorico(LocalDate inicio, LocalDate fim, String userRole, Long userId) {
+        LocalDateTime dataInicio = (inicio != null) ? inicio.atStartOfDay() : LocalDate.now().minusDays(30).atStartOfDay();
+        LocalDateTime dataFim = (fim != null) ? fim.atTime(23, 59, 59) : LocalDate.now().atTime(23, 59, 59);
+
+        List<Solicitacao> filtradas = new ArrayList<>();
+        String roleUpper = userRole != null ? userRole.toUpperCase() : "";
+
         if (roleUpper.contains("ADMIN") || roleUpper.contains("CONTROLLER")) {
             filtradas = solicitacaoRepository.findByDataSolicitacaoBetween(dataInicio, dataFim);
         }
-
-        // CASO 2: COORDENADOR (Vê apenas do seu segmento)
         else if (roleUpper.contains("COORDINATOR") || roleUpper.contains("COORDENADOR") || roleUpper.contains("MANAGER")) {
-            Long segmentoId = buscarSegmentoDoUsuario(userId);
-
-            if (segmentoId != null) {
-                // Busca direta no banco filtrando por Data E Segmento
+            List<Long> segmentosIds = buscarSegmentosDoUsuario(userId);
+            if (!segmentosIds.isEmpty()) {
                 filtradas = solicitacaoRepository.findByDataSolicitacaoBetweenAndSegmentoIdIn(
-                        dataInicio, dataFim, List.of(segmentoId)
+                        dataInicio, dataFim, segmentosIds
                 );
-            } else {
-                // Coordenador sem segmento não vê nada
-                return new ArrayList<>();
             }
-        }
-
-        // CASO 3: SOLICITANTE/OUTROS (Vê apenas as suas)
-        else {
+        } else {
             filtradas = solicitacaoRepository.findByDataSolicitacaoBetweenAndSolicitanteId(
                     dataInicio, dataFim, userId
             );
         }
 
-        // Ordenação e Conversão para DTO
         return filtradas.stream()
                 .sorted((a, b) -> b.getDataSolicitacao().compareTo(a.getDataSolicitacao()))
-                .limit(300) // Limite de segurança para não travar o front
+                .limit(300)
                 .map(this::converterParaDTO)
                 .collect(Collectors.toList());
     }
 
-    // --- LÓGICA DE FILTRO POR SEGMENTO ---
+    // --- MÉTODOS DE BUSCA E INTEGRAÇÃO ---
 
-    private List<Solicitacao> filtrarPorSegmentoDoUsuario(List<Solicitacao> lista, Long userId) {
-        if (userId == null || lista.isEmpty()) return lista;
+    // === CORREÇÃO CRÍTICA AQUI ===
+    private List<Long> buscarSegmentosDoUsuario(Long userId) {
+        Map<String, Object> map = buscarNoMonolito("/usuarios/" + userId);
+        List<Long> ids = new ArrayList<>();
 
-        Long segmentoUsuarioId = buscarSegmentoDoUsuario(userId);
-        if (segmentoUsuarioId == null) return Collections.emptyList(); // Sem segmento, não vê nada segmentado
+        if (map == null) return ids;
 
-        cacheSegmentoOs.clear(); // Limpa cache da requisição
+        // Verifica se existe o campo "segmentos" e se é uma lista
+        if (map.containsKey("segmentos") && map.get("segmentos") instanceof List) {
+            List<?> lista = (List<?>) map.get("segmentos");
+            for (Object item : lista) {
+                // Caso 1: O monólito devolve objetos (ex: [{"id": 1, ...}])
+                if (item instanceof Map) {
+                    Long id = convertToLong(((Map<?, ?>) item).get("id"));
+                    if (id != null) ids.add(id);
+                }
+                // Caso 2: O monólito devolve apenas IDs (ex: [1, 2, 3]) <--- ESTE É O SEU CASO
+                else if (item instanceof Number) {
+                    ids.add(((Number) item).longValue());
+                }
+            }
+        }
+        // Fallback: Verifica se existe "segmento" (singular) como objeto
+        else if (map.containsKey("segmento") && map.get("segmento") instanceof Map) {
+            Map<String, Object> segMap = (Map<String, Object>) map.get("segmento");
+            Long id = convertToLong(segMap.get("id"));
+            if (id != null) ids.add(id);
+        }
 
-        return lista.stream()
-                .filter(s -> {
-                    Long segOs = buscarSegmentoDaOs(s.getOsId());
-                    return segmentoUsuarioId.equals(segOs);
-                })
-                .collect(Collectors.toList());
+        return ids;
     }
 
-    // --- BUSCAS NO MONÓLITO (ROBUSTAS) ---
+    private Long buscarSegmentoDoItem(Long itemId) {
+        Map<String, Object> map = buscarNoMonolito("/os/detalhes/" + itemId);
+        if (map != null && map.get("segmento") instanceof Map) {
+            Map<String, Object> segMap = (Map<String, Object>) map.get("segmento");
+            return convertToLong(segMap.get("id"));
+        }
+        return null;
+    }
+
+    private Long buscarSegmentoDaOs(Long osId) {
+        if (osId == null) return null;
+        if (cacheSegmentoOs.containsKey(osId)) return cacheSegmentoOs.get(osId);
+
+        Map<String, Object> map = buscarNoMonolito("/os/" + osId);
+        if (map != null && map.get("segmento") instanceof Map) {
+            Map<String, Object> segMap = (Map<String, Object>) map.get("segmento");
+            Long segId = convertToLong(segMap.get("id"));
+            cacheSegmentoOs.put(osId, segId);
+            return segId;
+        }
+        return null;
+    }
 
     private List<String> getUrlsMonolito() {
         return List.of(
@@ -200,7 +256,6 @@ public class SolicitacaoService {
         for (String baseUrl : getUrlsMonolito()) {
             if (baseUrl == null || baseUrl.isBlank()) continue;
             try {
-                // Remove barra final da URL base se tiver
                 String urlBaseLimpa = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
                 String fullUrl = urlBaseLimpa + pathClean;
 
@@ -232,31 +287,6 @@ public class SolicitacaoService {
         }
         return new HttpEntity<>(body, headers);
     }
-
-    private Long buscarSegmentoDoUsuario(Long userId) {
-        Map<String, Object> map = buscarNoMonolito("/usuarios/" + userId);
-        if (map != null && map.get("segmento") instanceof Map) {
-            Map<String, Object> segMap = (Map<String, Object>) map.get("segmento");
-            return convertToLong(segMap.get("id"));
-        }
-        return null;
-    }
-
-    private Long buscarSegmentoDaOs(Long osId) {
-        if (osId == null) return null;
-        if (cacheSegmentoOs.containsKey(osId)) return cacheSegmentoOs.get(osId);
-
-        Map<String, Object> map = buscarNoMonolito("/os/" + osId);
-        if (map != null && map.get("segmento") instanceof Map) {
-            Map<String, Object> segMap = (Map<String, Object>) map.get("segmento");
-            Long segId = convertToLong(segMap.get("id"));
-            cacheSegmentoOs.put(osId, segId);
-            return segId;
-        }
-        return null;
-    }
-
-    // --- DEMAIS MÉTODOS DE NEGÓCIO ---
 
     @Transactional
     public void processarLote(DecisaoLoteDTO dto, String acao, String role) {
@@ -321,7 +351,7 @@ public class SolicitacaoService {
         boolean todosRejeitados = s.getItens().stream().allMatch(i -> i.getStatusItem() == StatusItem.REPROVADO);
         if (todosRejeitados) { s.setStatus(StatusSolicitacao.REPROVADO); solicitacaoRepository.save(s); return; }
 
-        if (role.toUpperCase().contains("COORDINATOR") || role.toUpperCase().contains("COORDENADOR")) {
+        if (role.toUpperCase().contains("COORDINATOR") || role.toUpperCase().contains("COORDENADOR") || role.toUpperCase().contains("MANAGER")) {
             s.setStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
             s.getItens().stream().filter(i -> i.getStatusItem() == StatusItem.APROVADO).forEach(i -> i.setStatusItem(StatusItem.PENDENTE));
         } else if (isFinanceiro(role)) {
@@ -346,8 +376,6 @@ public class SolicitacaoService {
             } catch (Exception ignored) { }
         }
     }
-
-    // --- CONVERSORES E UTILITÁRIOS ---
 
     private SolicitacaoResponseDTO converterParaDTO(Solicitacao s) {
         return new SolicitacaoResponseDTO(
@@ -395,4 +423,5 @@ public class SolicitacaoService {
     private String firstNonBlank(String... v) { for (String s : v) if (s != null && !s.isBlank()) return s; return null; }
     private String asString(Object o) { return o == null ? null : String.valueOf(o).trim(); }
     private Long convertToLong(Object o) { if (o instanceof Number) return ((Number) o).longValue(); try { return Long.valueOf(asString(o)); } catch (Exception e) { return null; } }
+
 }
