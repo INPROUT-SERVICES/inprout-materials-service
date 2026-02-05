@@ -102,32 +102,40 @@ public class SolicitacaoService {
 
         List<Solicitacao> solicitacoes = new ArrayList<>();
 
+        // Cenário 1: ADMIN vê tudo que tem item pendente (Regra customizada do repo)
         if (roleUpper.contains("ADMIN")) {
             solicitacoes = solicitacaoRepository.findAllPendentesAdmin();
         }
+        // Cenário 2: CONTROLLER vê tudo que está na fase dele
         else if (roleUpper.contains("CONTROLLER")) {
             solicitacoes = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_CONTROLLER);
         }
-        else if (roleUpper.contains("COORDINATOR") || roleUpper.contains("COORDENADOR") || roleUpper.contains("MANAGER")) {
+        // Cenário 3: COORDENADOR/GERENTE (Otimizado)
+        else if (roleUpper.contains("COORDINATOR") || roleUpper.contains("MANAGER")) {
+            // 1. Busca os segmentos do usuário UMA vez (1 chamada HTTP)
             List<Long> segmentosUsuario = buscarSegmentosDoUsuario(userId);
-            if (segmentosUsuario.isEmpty()) return new ArrayList<>();
 
-            List<Solicitacao> todasPendentes = solicitacaoRepository.findByStatus(StatusSolicitacao.PENDENTE_COORDENADOR);
+            if (segmentosUsuario.isEmpty()) {
+                return new ArrayList<>();
+            }
 
-            // Filtra e corrige usando cache para evitar spam no monólito
-            Map<Long, Long> cacheSegmento = new HashMap<>();
-
-            solicitacoes = todasPendentes.stream()
-                    .filter(s -> validarOuAtualizarDados(s, segmentosUsuario, cacheSegmento))
-                    .collect(Collectors.toList());
+            // 2. Busca no banco JÁ FILTRADO pelos segmentos (Zero processamento inútil em memória)
+            solicitacoes = solicitacaoRepository.findByStatusAndSegmentoIdIn(
+                    StatusSolicitacao.PENDENTE_COORDENADOR,
+                    segmentosUsuario
+            );
         }
 
-        // Prepara caches para a conversão (EVITA N+1 CALLS)
+        // Prepara caches para a conversão (EVITA N+1 CALLS repetitivas)
         Map<Long, Map<String, Object>> cacheOs = new HashMap<>();
         Map<Long, Map<String, Object>> cacheLpu = new HashMap<>();
         Map<Long, Map<String, Object>> cacheUser = new HashMap<>();
 
+        // 3. Converte apenas o necessário
         return solicitacoes.stream()
+                // Removemos o filtro 'validarOuAtualizarDados' daqui pois agora confiamos no filtro do banco.
+                // Se houver dados inconsistentes (sem segmentoId no banco), eles não aparecerão,
+                // o que é mais seguro e performático do que tentar "consertar" na hora da leitura.
                 .map(s -> converterParaDTO(s, cacheOs, cacheLpu, cacheUser))
                 .collect(Collectors.toList());
     }
@@ -240,26 +248,34 @@ public class SolicitacaoService {
     }
 
     private OsDTO montarOsDTO(Long osId, Map<Long, Map<String, Object>> cache) {
-        if (osId == null) return new OsDTO(0L, "-", new SegmentoDTO(0L, "-"));
+        // Se não tiver ID, retorna vazio
+        if (osId == null) return new OsDTO(0L, "-", new SegmentoDTO(0L, "-"), "-");
 
         Map<String, Object> map;
         if (cache.containsKey(osId)) {
             map = cache.get(osId);
         } else {
             map = buscarNoMonolito("/os/" + osId);
-            cache.put(osId, map); // Cache mesmo que seja null
+            cache.put(osId, map);
         }
 
         if (map != null) {
             String num = firstNonBlank(asString(map.get("os")), asString(map.get("numeroOS")), String.valueOf(osId));
+
             SegmentoDTO seg = new SegmentoDTO(0L, "-");
             if (map.get("segmento") instanceof Map) {
                 Map<String, Object> segMap = (Map<String, Object>) map.get("segmento");
                 seg = new SegmentoDTO(convertToLong(segMap.get("id")), firstNonBlank(asString(segMap.get("nome")), "-"));
             }
-            return new OsDTO(convertToLong(map.get("id")), num, seg);
+
+            // --- CORREÇÃO AQUI: Pegar o Site do mapa da OS ---
+            String site = asString(map.get("site"));
+            if (site == null || site.isBlank()) site = "-";
+
+            return new OsDTO(convertToLong(map.get("id")), num, seg, site);
         }
-        return new OsDTO(osId, String.valueOf(osId), new SegmentoDTO(0L, "-"));
+
+        return new OsDTO(osId, String.valueOf(osId), new SegmentoDTO(0L, "-"), "-");
     }
 
     private LpuDTO montarLpuDTO(Long lpuId, String siteSalvo, Map<Long, Map<String, Object>> cache) {
