@@ -44,6 +44,9 @@ public class Solicitacao {
     @Column(name = "segmento_id")
     private Long segmentoId;
 
+    @Column(name = "site")
+    private String site;
+
     @OneToMany(mappedBy = "solicitacao", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
     private List<ItemSolicitacao> itens = new ArrayList<>();
 
@@ -52,6 +55,15 @@ public class Solicitacao {
     }
 
     // Getters and Setters...
+
+    public String getSite() {
+        return site;
+    }
+
+    public void setSite(String site) {
+        this.site = site;
+    }
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public StatusSolicitacao getStatus() { return status; }
