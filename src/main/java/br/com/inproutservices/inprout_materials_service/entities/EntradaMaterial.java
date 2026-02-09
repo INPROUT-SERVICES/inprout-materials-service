@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneId; // Importação necessária
 
 @Entity
 @Table(name = "entradas_material")
@@ -32,7 +33,8 @@ public class EntradaMaterial {
 
     @PrePersist
     protected void onCreate() {
-        this.dataEntrada = LocalDateTime.now();
+        // Garante explicitamente o horário de Brasília
+        this.dataEntrada = LocalDateTime.now(ZoneId.of("America/Sao_Paulo"));
     }
 
     // Getters e Setters
